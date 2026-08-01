@@ -88,12 +88,12 @@ print("-" * 40)
 raw_filtered = raw.copy().filter(l_freq=0.5, h_freq=40.0)
 print(f"带通滤波 (0.5-40 Hz): 完成")
 
-# 降采样 - 减少计算量
-raw_resampled = raw_filtered.copy().resample(sfreq=128)
-print(f"降采样至 128 Hz: {raw_resampled.info['sfreq']} Hz")
+# # 降采样 - 减少计算量
+# raw_resampled = raw_filtered.copy().resample(sfreq=128)
+# print(f"降采样至 128 Hz: {raw_resampled.info['sfreq']} Hz")
 
 # 设置参考 - 使用平均参考
-raw_reref = raw_resampled.copy().set_eeg_reference("average")
+raw_reref = raw_filtered.copy().set_eeg_reference("average")
 print(f"平均参考: 完成")
 
 # ============================================================
@@ -108,22 +108,25 @@ events = []
 for i in range(0, n_samples - event_interval, event_interval):
     event_id = 1 if i % (2 * event_interval) == 0 else 2
     events.append([i, 0, event_id])
-events = np.array(events)
+events = np.array(events)  # shape (n_events, 3): 时间戳, 前状态持续时间, 事件类型
+# 第 1 列 = 事件发生的采样点位置；
+# 第 2 列 = 事件发生前那一刻，stim 通道（刺激通道）的值（几乎总是 0，通常忽略）；
+# 第 3 列 = 事件类别标签 ID。
 
 print(f"事件数量: {len(events)}")
-print(f"事件类型: {np.unique(events[:, 2])}")
+print(f"事件类型: {np.unique(events[:, 2])}") # 事件列
 
 # 创建 Epochs
 tmin, tmax = 0.0, 2.0  # 每个 epoch 从事件开始后 0-2 秒
 epochs = mne.Epochs(
-    raw_reref,
-    events,
-    event_id={1: 1, 2: 2},
-    tmin=tmin,
-    tmax=tmax,
-    baseline=None,
-    preload=True,
-    verbose=False,
+    raw_reref,  # 预处理后的MNE Raw对象（经带通滤波、降采样、平均参考处理），作为epoch提取的数据源
+    events,  # 事件数组，形状为(n_events, 3)，每行格式[事件采样点, 前stim通道值, 事件类型ID]，用于指定epoch起点
+    event_id={"left_hand": 1, "right_hand": 2},  # 事件ID映射字典：key必须是字符串(事件名称)，value是events数组第3列的事件ID
+    tmin=tmin,  # epoch相对于事件起点的开始时间（秒），此处tmin=0.0s，即从事件发生瞬间开始截取
+    tmax=tmax,  # epoch相对于事件起点的结束时间（秒），此处tmax=2.0s，即截取事件后2秒的时间窗口
+    baseline=None,  # 基线校正的时间区间（相对于事件起点），设为None表示不进行基线校正
+    preload=True,  # 是否将所有epoch数据预加载到内存中，True表示预加载，便于后续快速访问
+    verbose=False,  # 控制MNE日志输出详细程度，False为静默模式，不输出冗余信息
 )
 print(f"Epochs 对象: {epochs}")
 print(f"  - epoch 数量: {len(epochs)}")
@@ -135,22 +138,38 @@ print(f"  - 每个 epoch 形状: {epochs.get_data().shape[1:]}")
 print("\n4. braindecode 数据集结构")
 print("-" * 40)
 
-from braindecode.datasets import BaseDataset, BaseConcatDataset
+from braindecode.datasets import RawDataset, BaseConcatDataset
 
-# 将 MNE Raw 转换为 braindecode BaseDataset
-# BaseDataset 需要 raw 和 description (一个 pandas Series)
+# 将 MNE Raw 转换为 braindecode RawDataset
+# RawDataset 需要 raw 和 description (一个 pandas Series)
 import pandas as pd
 
-description = pd.Series({"subject": 0, "session": "train", "run": 0})
-base_dataset = BaseDataset(raw_reref, description)
-print(f"BaseDataset: {base_dataset}")
-print(f"  - 数据长度: {len(base_dataset)}")
+"""
+Subject（被试 / 人）
+  └── Session（会话 / 天）
+        └── Run（轮次 / 单次采集文件）
+              └── Trial（试次 / 单个刺激事件）
+"""
+description = pd.Series(
+    {
+        "subject": 0,       # 被试编号
+        "session": "train", # 会话类型
+        "run": 0            # 轮次编号(包含多个试次trial)
+    }
+)
+dataset1 = RawDataset(raw_reref, description)
+print(f"RawDataset: {dataset1}")
+print(f"  - 数据长度: {len(dataset1)}")
 
 # 拼接多个数据集
-dataset2 = BaseDataset(raw_reref, pd.Series({"subject": 1, "session": "train", "run": 0}))
-concat_dataset = BaseConcatDataset([base_dataset, dataset2])
+dataset2 = RawDataset(raw_reref, pd.Series({"subject": 1, "session": "train", "run": 0}))
+concat_dataset = BaseConcatDataset([dataset1, dataset2])
 print(f"BaseConcatDataset: {concat_dataset}")
 print(f"  - 包含 {len(concat_dataset.datasets)} 个子数据集")
+
+print(concat_dataset.datasets[0].description)
+print(concat_dataset.datasets[1].description)
+
 
 # ============================================================
 # 5. 使用 MOABB 加载公开数据集
@@ -168,9 +187,15 @@ try:
     print(f"MOABB 数据集: {dataset}")
     print(f"  - 子数据集数量: {len(dataset.datasets)}")
     print(f"  - 第一个数据集: {dataset.datasets[0]}")
+
+    print(dataset.datasets[0].description)
+    print(dataset.datasets[1].description)
+
 except Exception as e:
     print(f"MOABB 数据集加载失败（可能无网络）: {e}")
     print("提示：可以使用模拟数据继续学习")
+
+exit(0)
 
 # ============================================================
 # 6. 创建 WindowDataset（滑动窗口分段）
