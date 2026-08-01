@@ -144,6 +144,17 @@ print(f"  - 时间点: {n_times}")
 
 # 模拟卷积操作（EEGNet 的第一层）
 # 输入: (batch, channels, time) -> (batch, 1, channels, time)
+"""
+传统图像:  (N, C_in, H, W) = (batch, RGB, Height, Width)
+EEGNet:   (N, C_in, C, T) = (batch, 1,  电极,  时间)
+                            ─────  ──  ──────  ─────
+                            样本  伪通道 电极维  时间维
+
+关键思想 ：把所有 EEG 电极当成"一张图像"来处理：
+第 1 维 = 1 ：把多通道 EEG 视为单通道"图像"（每个采样时刻的电极电压构成一个"像素行"）
+第 2 维 = 电极数 C ：作为"图像的高度"
+第 3 维 = 时间 T ：作为"图像的宽度"
+"""
 eeg_4d = eeg_input.unsqueeze(1)
 print(f"添加通道维度后: {eeg_4d.shape}")
 
@@ -166,7 +177,58 @@ conv2 = torch.nn.Conv2d(
 )
 output2 = conv2(output1)
 print(f"深度卷积后: {output2.shape}")
+"""
+输入 16 通道 ──▶ 分成 16 组 ──▶ 每组 1 个输入通道
+                                 ↓
+                          每组生成 32/16 = 2 个输出通道
+                                 ↓
+                          每个输出通道只依赖 1 个输入通道
+                          参数量: 32 × 1 × 22 × 1 = 704
+"""
+"""
+Input (B,1,22,1000)
+   │
+   ▼
+conv1: Temporal Conv    kernel=(1,125)   ──▶ (B,16,22,1000)  时间滤波
+   │
+   ▼
+BatchNorm + ELU
+   │
+   ▼
+★ conv2: Depthwise Conv  kernel=(22,1)   ──▶ (B,32,1,1000)   空间滤波  ★ 本层
+   │                       groups=16
+   ▼
+BatchNorm + ELU + Dropout
+   │
+   ▼
+Separable Conv (Pointwise + Depthwise)    ──▶ (B,32,1,1000)   特征融合
+   │
+   ▼
+AveragePooling + Linear                   ──▶ (B, num_classes)
+"""
 
+"""
+输入 (batch, 1, C, T)
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│  Block 1                                 │
+│  ├─ 时间卷积: Conv2d(1, F1, (1, k))      │  ← 提取频率特征
+│  └─ 深度卷积: DepthwiseConv2d((C,1))     │  ← 提取空间特征
+└──────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│  Block 2                                 │
+│  └─ 分离卷积: SeparableConv2d((1, k))    │  ← 特征融合
+└──────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│  分类头                                  │
+│  └─ Flatten + Linear + LogSoftmax        │
+└──────────────────────────────────────────┘
+"""
 print("\n" + "=" * 60)
 print("学习要点：")
 print("1. EEG 数据形状: (batch, channels, time)")
