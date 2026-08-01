@@ -170,6 +170,13 @@ print(f"  - 包含 {len(concat_dataset.datasets)} 个子数据集")
 print(concat_dataset.datasets[0].description)
 print(concat_dataset.datasets[1].description)
 
+"""
+Subject（被试 / 人）
+  └── Session（会话 / 天）
+        └── Run（轮次 / 单次采集文件）
+              └── Trial（试次 / 单个刺激事件）
+"""
+
 
 # ============================================================
 # 5. 使用 MOABB 加载公开数据集
@@ -191,11 +198,17 @@ try:
     print(dataset.datasets[0].description)
     print(dataset.datasets[1].description)
 
+    """
+    Subject（被试 / 人）
+    └── Session（会话 / 天）
+            └── Run（轮次 / 单次采集文件）
+                └── Trial（试次 / 单个刺激事件）
+    """
+
 except Exception as e:
     print(f"MOABB 数据集加载失败（可能无网络）: {e}")
     print("提示：可以使用模拟数据继续学习")
 
-exit(0)
 
 # ============================================================
 # 6. 创建 WindowDataset（滑动窗口分段）
@@ -212,31 +225,41 @@ from braindecode.preprocessing import create_windows_from_events
 
 # 首先给 raw 添加 annotations 作为事件标记
 onsets = np.arange(0, len(raw_reref.times) - 4 * sfreq, 4 * sfreq) / sfreq
-durations = [0.0] * len(onsets)
-descriptions_list = [1 if i % 2 == 0 else 2 for i in range(len(onsets))]
+durations = [0.0] * len(onsets) # durations（每个事件的持续时间）
+descriptions_list = ["left" if i % 2 == 0 else "right" for i in range(len(onsets))]
 annotations = mne.Annotations(onsets, durations, descriptions_list)
+print(annotations.description[:5])
 raw_annotated = raw_reref.copy().set_annotations(annotations)
+# set_annotations 默认是 in-place 操作 —— 直接修改 raw_reref 本身，并返回 self
 
-# 重新创建 BaseDataset
-base_dataset_annotated = BaseDataset(
+# 用 BaseConcatDataset 包裹（create_windows_from_events 要求传入 BaseConcatDataset）
+raw_dataset_annotated = BaseConcatDataset([RawDataset(
     raw_annotated,
     pd.Series({"subject": 0, "session": "train", "run": 0}),
-)
+)])
 
 # 创建连续窗口
+# 当前代码用的是 Cropped Decoding （步长 < 窗口大小，产生重叠窗口），这正是 braindecode 推荐的做法
 windows_dataset = create_windows_from_events(
-    base_dataset_annotated,
+    raw_dataset_annotated,
     trial_start_offset_samples=0,
-    trial_stop_offset_samples=0,
-    window_size_samples=256,  # 2 秒 @ 128Hz
-    window_stride_samples=128,  # 1 秒步长
+    trial_stop_offset_samples=1000,  # 4 秒 @ 250Hz，与事件间隔一致
+    window_size_samples=500,  # 2 秒 @ 250Hz
+    window_stride_samples=250,  # 1 秒步长
     preload=True,
 )
 print(f"WindowsDataset: {windows_dataset}")
 print(f"  - 窗口数量: {len(windows_dataset)}")
 if len(windows_dataset) > 0:
-    X, y, _ = windows_dataset[0]
-    print(f"  - 单个窗口形状: X={X.shape}, y={y}")
+    # x:(n_channels, n_times)EEG 窗口数据
+    # y:(n_classes,)分类标签
+    # crop_inds:(3,)窗口的元信息索引
+    #   crop_inds[0]: 该窗口在 trial 内的序号（第几个滑动窗口）
+    #   crop_inds[1]: 窗口在原始 Raw 数据中的 起始采样点
+    #   crop_inds[2]: 窗口在原始 Raw 数据中的 结束采样点
+    for i, (X, y, crop_inds) in enumerate(windows_dataset):
+        print(f"  - 第{i}个窗口的形状: X={X.shape}, y={y}, crop_inds={crop_inds}")
+
 
 # ============================================================
 # 7. 预处理管道
@@ -245,10 +268,14 @@ print("\n7. 预处理管道")
 print("-" * 40)
 
 # braindecode 提供了 Preprocessor 类来构建预处理管道
+def to_microvolts(x):
+    return x * 1e6
+
+# 显式告诉 braindecode 这些是字符串指令，不需要自动修正
 preprocessors = [
-    Preprocessor("filter", l_freq=4.0, h_freq=38.0),  # 带通滤波
-    Preprocessor("resample", sfreq=128),  # 降采样
-    Preprocessor(lambda x: x * 1e6),  # 转换为微伏
+    Preprocessor("filter", l_freq=4.0, h_freq=38.0, apply_on_array=False),
+    Preprocessor("resample", sfreq=128, apply_on_array=False),
+    Preprocessor(to_microvolts),
 ]
 
 print("预处理管道:")
