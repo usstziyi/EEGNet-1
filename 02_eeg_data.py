@@ -7,6 +7,38 @@
 - 掌握 EEG 数据的预处理流程（滤波、分段、标准化等）
 
 braindecode 与 MNE-Python 紧密集成，利用 MNE 的数据结构进行预处理。
+braindecode.datasets.MOABBDataset (包装器)
+  ↓ 内部调用
+moabb.datasets.* (具体数据集，如 BNCI2014001)
+  ↓ 内部使用
+mne (数据读取与处理)
+
+你的代码
+    │
+    │  MOABBDataset("BNCI2014001", [1])
+    ▼
+braindecode.datasets.MOABBDataset
+    │
+    │  动态导入 moabb.datasets.BNCI2014001
+    ▼
+moabb.datasets.BNCI2014001.get_data(subjects=[1])
+    │
+    │  1. 检查本地缓存 → 没有就下载
+    │  2. 读取 .gdf 文件
+    ▼
+mne.io.read_raw_gdf("~/mne_data/.../A01T.gdf", preload=True)
+    │
+    │  解析二进制 GDF 格式 → numpy 数组 + 元信息
+    ▼
+mne.io.Raw 对象
+    │
+    │  包装成 braindecode.datasets.BaseDataset
+    ▼
+braindecode.datasets.BaseConcatDataset
+    │
+    │  你拿到的 dataset 变量
+    ▼
+你的代码继续用 dataset.datasets[0].raw 访问
 """
 
 import numpy as np
