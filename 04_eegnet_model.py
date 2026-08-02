@@ -14,6 +14,7 @@ EEGNet 是 BCI 领域最经典的轻量级模型之一，由 Lawhern et al. (201
 import torch
 import torch.nn as nn
 import numpy as np
+from torchinfo import summary
 
 print("=" * 60)
 print("EEGNet 模型详解")
@@ -95,6 +96,16 @@ class EEGNetManual(nn.Module):
         # BatchNorm 可以有效抵消这种 输入分布的变化 ，让模型专注于学习 时间和空间模式 ，而不是绝对幅度的数值。
         self.bn1 = nn.BatchNorm2d(F1) # shape不变
 
+        """
+        # 滤波器 1: 关注额区通道 (Fp1, Fp2, F3, F4)
+        w_1 = [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, ..., 0.0]  # 22个通道权重
+
+        # 滤波器 2: 关注中央区通道 (C3, C4, Cz)
+        w_2 = [0.1, 0.1, 0.3, 0.3, 0.3, 0.2, ..., 0.0]
+
+        # 滤波器 3: 关注顶区+枕区 (P3, P4, O1, O2)
+        w_3 = [0.0, 0.0, 0.1, 0.1, 0.2, 0.3, ..., 0.3]
+        """
         # Block 1: 深度卷积（空间滤波）
         # 使用 depthwise conv，每个输入通道独立卷积
         # 输入: (batch, F1, C, T)
@@ -229,7 +240,7 @@ from braindecode.models import EEGNet
 # braindecode 提供了 EEGNet 的标准实现
 model_braindecode = EEGNet(
     n_chans=22,
-    n_times=1000,
+    n_times=1000, # 采样点数 = 4s @ 250Hz
     n_outputs=4,
     F1=8,
     F2=16,
@@ -254,7 +265,9 @@ print("\n4. 模型结构可视化")
 print("-" * 40)
 
 print("\n手动实现的 EEGNet 结构:")
-print(model_manual)
+summary(model_manual, input_data=dummy_input, col_names=["input_size", "output_size", "num_params", "mult_adds"])
+print("\nbraindecode 的 EEGNet 结构:")
+summary(model_braindecode, input_data=dummy_input, col_names=["input_size", "output_size", "num_params", "mult_adds"])
 
 # ============================================================
 # 5. 关键组件详解
@@ -304,24 +317,24 @@ for name, param in model_manual.named_parameters():
 
 total_params = sum(p.numel() for p in model_manual.parameters() if p.requires_grad)
 print(f"\n总参数量: {total_params:,}")
-
 # ============================================================
 # 7. 特征图可视化
 # ============================================================
 print("\n7. 特征图可视化")
 print("-" * 40)
 
-
+# input_tensor: (batch, channels, time)(1, 22, 1000)
 def visualize_feature_maps(model, input_tensor):
     """可视化中间层的特征图"""
     model.eval()
     with torch.no_grad():
         # 逐层获取特征图
         x = input_tensor.unsqueeze(1) if input_tensor.dim() == 3 else input_tensor
+        # (batch, channels, time) -> (batch, 1, channels, time)
 
         # Block 1: 时间卷积
-        x1 = model.conv1(x)
-        x1 = model.bn1(x1)
+        x1 = model.conv1(x) # (batch, 1, channels, time)
+        x1 = model.bn1(x1) # (batch, 1, channels, time)
         print(f"时间卷积后: {x1.shape} -> {x1.shape[1]} 个时间滤波器")
 
         # Block 1: 深度卷积
