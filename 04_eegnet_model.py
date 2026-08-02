@@ -91,7 +91,9 @@ class EEGNetManual(nn.Module):
             padding=(0, kernel_length // 2),
             bias=False,
         )
-        self.bn1 = nn.BatchNorm2d(F1)
+        # EEG 数据的幅度在不同被试、不同试次间差异很大（可能从微伏到毫伏级波动）。
+        # BatchNorm 可以有效抵消这种 输入分布的变化 ，让模型专注于学习 时间和空间模式 ，而不是绝对幅度的数值。
+        self.bn1 = nn.BatchNorm2d(F1) # shape不变
 
         # Block 1: 深度卷积（空间滤波）
         # 使用 depthwise conv，每个输入通道独立卷积
@@ -104,9 +106,17 @@ class EEGNetManual(nn.Module):
             groups=F1,  # depthwise convolution
             bias=False,
         )
-        self.bn2 = nn.BatchNorm2d(F1 * D)
-        self.activation1 = nn.ELU()
-        self.pool1 = nn.AvgPool2d(kernel_size=(1, 4))
+        """
+        为什么是 D=2 个核/每输入通道
+        每个输入通道（时间特征）产生 2 个输出，相当于学习 2 种不同的空间滤波方式 。例如：
+
+        - 核 A 可能学到"额区 + 中央区"的加权模式
+        - 核 B 可能学到"顶区 + 枕区"的加权模式
+        这样每个时间特征都能被映射到 2 种不同的空间投影上，提升表达能力。
+        """
+        self.bn2 = nn.BatchNorm2d(F1 * D) # shape不变
+        self.activation1 = nn.ELU()  # 激活函数：引入非线性，帮助模型学习复杂模式
+        self.pool1 = nn.AvgPool2d(kernel_size=(1, 4)) # (batch, F1*D, 1, T//4)
         self.dropout1 = nn.Dropout(dropout)
 
         # Block 2: 分离卷积
@@ -122,24 +132,26 @@ class EEGNetManual(nn.Module):
                 padding=(0, (kernel_length // 4) // 2),
                 groups=F1 * D,
                 bias=False,
-            ),
-            # 1x1 卷积（pointwise）
+            ), # (batch, F1*D, 1, T/4)
+            # 1x1 卷积（pointwise）：通道融合，降维/升维
             nn.Conv2d(
                 in_channels=F1 * D,
                 out_channels=F2,
                 kernel_size=(1, 1),
                 bias=False,
-            ),
+            ), # (batch, F2, 1, T/4)
         )
         self.bn3 = nn.BatchNorm2d(F2)
         self.activation2 = nn.ELU()
-        self.pool2 = nn.AvgPool2d(kernel_size=(1, 8))
-        self.dropout2 = nn.Dropout(dropout)
+        self.pool2 = nn.AvgPool2d(kernel_size=(1, 8)) # (batch, F2, 1, T/32)
+        self.dropout2 = nn.Dropout(dropout) # （batch, F2, 1, T/32）
 
         # 计算分类头的输入维度
         self.final_time = self._get_final_time_dim()
+        # n_classes 是模型需要区分的 类别数量 ，完全由你的 分类任务决定
         self.classifier = nn.Linear(F2 * self.final_time, n_classes)
 
+    # 试运行获取最终时间维度，用于分类头
     def _get_final_time_dim(self):
         """计算经过池化后的时间维度"""
         x = torch.zeros(1, 1, self.n_channels, self.n_times)
@@ -183,6 +195,7 @@ class EEGNetManual(nn.Module):
         x = self.dropout2(x)
 
         # 分类头
+        # flatten(1) 将除 batch 以外的所有维度展平
         x = x.flatten(1)  # (batch, F2, 1, T_final) -> (batch, F2*T_final)
         x = self.classifier(x)
 

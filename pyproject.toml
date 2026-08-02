@@ -13,5 +13,5 @@ dependencies = [
     "scikit-learn>=1.3.0",
     "notebook>=6.0.0",
     "ipywidgets>=7.0.0",
-    "braindecode[moadd]>=1.7.0",
+    "braindecode[moabb,visualization]>=1.7.0",
 ]
