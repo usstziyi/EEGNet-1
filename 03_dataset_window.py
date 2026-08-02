@@ -48,13 +48,13 @@ raw = mne.io.RawArray(data, info, verbose=False)
 
 # 添加事件标记（每 4 秒一个，4 类）
 event_interval = 4.0  # 秒
-n_events = int(duration / event_interval)
-onsets = np.arange(n_events) * event_interval
-durations = [0.0] * n_events
+n_events = int(duration / event_interval) # 事件数量
+onsets = np.arange(n_events) * event_interval # 事件发生时间
+durations = [0.0] * n_events # 事件持续时间
 # 4 类运动想象: left hand, right hand, feet, rest
 descriptions_list = [1, 2, 3, 4] * (n_events // 4) + [1, 2, 3, 4][:n_events % 4]
 annotations = mne.Annotations(onsets, durations, [str(d) for d in descriptions_list])
-raw = raw.set_annotations(annotations)
+raw = raw.set_annotations(annotations) # 添加事件标记
 
 print(f"Raw 数据: {len(raw.ch_names)} 通道, {raw.times[-1]:.1f} 秒")
 print(f"事件数量: {len(onsets)}, 类别: {set(descriptions_list)}")
@@ -108,9 +108,9 @@ dataset.datasets[0].raw.info['sfreq']
 """
 
 # ============================================================
-# 3. Trialwise Decoding（试次级解码）
+# 3. Trialwise Decoding（试次级解码（或整试次窗口））
 # ============================================================
-print("\n3. Trialwise Decoding（试次级解码）")
+print("\n3. Trialwise Decoding（试次级解码（或整试次窗口））")
 print("-" * 40)
 
 # Trialwise: 每个 trial 提取一个固定长度的窗口，产生一个预测
@@ -126,14 +126,14 @@ windows_trialwise = create_windows_from_events(
 
 print(f"Trialwise 窗口数: {len(windows_trialwise)}")
 if len(windows_trialwise) > 0:
-    X, y, idx = windows_trialwise[0]
-    print(f"  单个样本: X.shape={X.shape}, y={y}")
-    print(f"  X 含义: (channels, time) = ({X.shape[0]}, {X.shape[1]})")
+    for i,(X, y, idx) in enumerate(windows_trialwise):
+        print(f"  第 {i} 个样本: X.shape={X.shape}, y={y}, idx={idx}")
+
 
 # ============================================================
-# 4. Cropped Decoding（裁剪解码）
+# 4. Cropped Decoding（裁剪窗口解码（或滑动窗口））
 # ============================================================
-print("\n4. Cropped Decoding（裁剪解码）")
+print("\n4. Cropped Decoding（裁剪窗口解码（或滑动窗口））")
 print("-" * 40)
 
 # Cropped: 使用滑动窗口，一个 trial 产生多个重叠的窗口
@@ -150,9 +150,8 @@ windows_cropped = create_windows_from_events(
 
 print(f"Cropped 窗口数: {len(windows_cropped)}")
 if len(windows_cropped) > 0:
-    X, y, idx = windows_cropped[0]
-    print(f"  单个样本: X.shape={X.shape}, y={y}")
-    print(f"  窗口数比 Trialwise 多: {len(windows_cropped) / max(len(windows_trialwise), 1):.1f} 倍")
+    for i,(X, y, idx) in enumerate(windows_cropped):
+        print(f"  第 {i} 个样本: X.shape={X.shape}, y={y}, idx={idx}")
 
 # ============================================================
 # 5. 构建 DataLoader
@@ -161,7 +160,8 @@ print("\n5. 构建 DataLoader")
 print("-" * 40)
 
 # 选择一种窗口策略
-windows_dataset = windows_trialwise if len(windows_trialwise) > 0 else windows_cropped
+# windows_dataset = windows_trialwise # 试次级解码（或整试次窗口）
+windows_dataset = windows_cropped # 裁剪窗口解码（或滑动窗口）
 
 # 划分训练集和验证集
 n_total = len(windows_dataset)
@@ -173,6 +173,12 @@ val_dataset = torch.utils.data.Subset(windows_dataset, range(n_train, n_total))
 
 print(f"总样本数: {n_total}")
 print(f"训练集: {n_train}, 验证集: {n_val}")
+
+# from torch.utils.data import random_split
+# train_dataset, val_dataset = random_split(
+#     windows_dataset, [0.8, 0.2],
+#     generator=torch.Generator().manual_seed(42)
+# )
 
 # 创建 DataLoader
 batch_size = 64
@@ -200,6 +206,8 @@ for X_batch, y_batch, idx_batch in train_loader:
     print(f"  X: {X_batch.shape} (batch, channels, time)")
     print(f"  y: {y_batch.shape} (batch,)")
     print(f"  类别分布: {torch.bincount(y_batch.long())}")
+    # 观察训练过程中类别分布是否均匀，如果出现严重偏差（比如某类只有 2 个样本，其他类有 20 个），
+    # 可能意味着数据划分有问题，需要重新采样或使用分层划分。
     break
 
 # ============================================================
@@ -218,7 +226,8 @@ X_sample = X_batch.float()
 mean = X_sample.mean()
 std = X_sample.std()
 X_normalized = (X_sample - mean) / (std + 1e-8)
-print(f"全局 Z-score: mean={X_normalized.mean():.4f}, std={X_normalized.std():.4f}")
+print(f"Z-score 前: mean={X_sample.mean():.4f}, std={X_sample.std():.4f}")
+print(f"Z-score 后: mean={X_normalized.mean():.4f}, std={X_normalized.std():.4f}")
 
 # 方法 2: 按通道标准化
 X_channel_norm = torch.zeros_like(X_sample)
@@ -226,7 +235,8 @@ for c in range(X_sample.shape[1]):
     ch_mean = X_sample[:, c, :].mean()
     ch_std = X_sample[:, c, :].std()
     X_channel_norm[:, c, :] = (X_sample[:, c, :] - ch_mean) / (ch_std + 1e-8)
-print(f"按通道标准化: mean={X_channel_norm.mean():.4f}, std={X_channel_norm.std():.4f}")
+print(f"Z-score 前: mean={X_sample.mean():.4f}, std={X_sample.std():.4f}")
+print(f"Z-score 后: mean={X_channel_norm.mean():.4f}, std={X_channel_norm.std():.4f}")
 
 # ============================================================
 # 7. 数据增强
@@ -236,10 +246,10 @@ print("-" * 40)
 
 # braindecode 提供了多种 EEG 特定的数据增强方法
 from braindecode.augmentation import (
-    FrequencyShift,
-    ChannelsDropout,
-    TimeReverse,
-    SignFlip,
+    FrequencyShift,      # 频率偏移增强：对 EEG 信号施加随机频率偏移，模拟频域抖动
+    ChannelsDropout,     # 通道丢弃增强：随机丢弃部分 EEG 通道，模拟电极接触不良
+    TimeReverse,         # 时间反转增强：对 EEG 信号进行时间维度上的反转，增加样本多样性
+    SignFlip,            # 符号翻转增强：随机翻转信号的正负号，模拟左右脑半球对称性差异
 )
 from braindecode.augmentation import Transform
 
@@ -247,11 +257,12 @@ from braindecode.augmentation import Transform
 transforms = [
     FrequencyShift(probability=0.5, sfreq=128, max_delta_freq=2.0),
     ChannelsDropout(probability=0.3, p_drop=0.1),
+    TimeReverse(probability=0.5),
     SignFlip(probability=0.5),
 ]
 
 # 应用增强
-X_augmented = X_sample.clone()
+X_augmented = X_sample  # 不需要 clone
 for transform in transforms:
     X_augmented = transform(X_augmented)
 
@@ -294,10 +305,10 @@ def get_data_loaders(
 
     # 2. 预处理
     preprocessors = [
-        Preprocessor("filter", l_freq=4.0, h_freq=38.0, verbose=False),
-        Preprocessor("resample", sfreq=128, verbose=False),
+        Preprocessor("filter", l_freq=4.0, h_freq=38.0, verbose=False,apply_on_array = False),
+        Preprocessor("resample", sfreq=128, verbose=False,apply_on_array = False),
     ]
-    preprocess(dataset, preprocessors)
+    preprocess(dataset, preprocessors) # 对 RawDataset 进行预处理
 
     # 3. 创建窗口
     windows = create_windows_from_events(
@@ -311,7 +322,10 @@ def get_data_loaders(
 
     # 4. 划分数据集
     n_total = len(windows)
+    print(f"总样本数: {n_total}")
     n_train = int(train_ratio * n_total)
+    print(f"训练集样本数: {n_train}")
+    print(f"验证集样本数: {n_total - n_train}")
     train_set = torch.utils.data.Subset(windows, range(n_train))
     val_set = torch.utils.data.Subset(windows, range(n_train, n_total))
 
