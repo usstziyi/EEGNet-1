@@ -5,11 +5,11 @@
 - 掌握 PyTorch 训练循环的构建
 - 理解损失函数、优化器、学习率调度器
 - 实现训练监控和早停机制
-- 使用 braindecode 的 EZGridClassifier 进行快速训练
+- 使用 braindecode 的 EEGClassifier 进行快速训练
 
 braindecode 提供了两种训练方式：
 1. 手动训练循环（灵活，适合学习）
-2. EZGridClassifier（简单，基于 scikit-learn API）
+2. EEGClassifier（简单，基于 scikit-learn API）
 """
 
 import torch
@@ -29,14 +29,14 @@ print("\n1. 创建模拟数据集")
 print("-" * 40)
 
 # 模拟 EEG 数据
-n_samples = 1000
+n_samples = 1000 # batch
 n_channels = 22
-n_times = 1000
-n_classes = 4
+n_times = 1000 # time steps
+n_classes = 4 # 0, 1, 2, 3
 
 # 生成随机数据
-X = torch.randn(n_samples, n_channels, n_times)
-y = torch.randint(0, n_classes, (n_samples,))
+X = torch.randn(n_samples, n_channels, n_times) # (batch, channels, time)
+y = torch.randint(0, n_classes, (n_samples,)) # (batch,)
 
 # 划分训练集和验证集
 n_train = int(0.8 * n_samples)
@@ -53,6 +53,7 @@ val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 print(f"训练集: {len(train_dataset)} 样本")
 print(f"验证集: {len(val_dataset)} 样本")
 print(f"类别分布: {torch.bincount(y_train)}")
+
 
 # ============================================================
 # 2. 定义模型
@@ -286,9 +287,9 @@ print("训练历史图已保存到: training_history.png")
 plt.close()
 
 # ============================================================
-# 7. 使用 braindecode 的 EZGridClassifier
+# 7. 使用 braindecode 的 EEGClassifier
 # ============================================================
-print("\n7. 使用 braindecode 的 EZGridClassifier")
+print("\n7. 使用 braindecode 的 EEGClassifier")
 print("-" * 40)
 
 from braindecode.classifier import EEGClassifier
