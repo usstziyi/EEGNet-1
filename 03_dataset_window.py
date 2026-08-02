@@ -64,17 +64,48 @@ print(f"事件数量: {len(onsets)}, 类别: {set(descriptions_list)}")
 # ============================================================
 print("\n2. 预处理")
 print("-" * 40)
-
+"""
+Braindecode 内部的判断逻辑是：
+- fn 是 可调用对象 （函数）→ apply_on_array 才有意义， True 走数组路径， False 走对象路径
+- fn 是 字符串 → 走 getattr(raw, fn) 路径，本质上就是在 raw 对象上调用方法，等价于 apply_on_array=False 的行为
+所以当你传 apply_on_array=True 配合字符串 fn 时，braindecode 认为这是一个"不匹配"的组合，自动把它修正为 False 并提醒你。
+"""
 preprocessors_list = [
-    Preprocessor("filter", l_freq=4.0, h_freq=38.0, verbose=False),
-    Preprocessor("resample", sfreq=128, verbose=False),
+    Preprocessor("filter", l_freq=4.0, h_freq=38.0, verbose=False,apply_on_array=False),
+    Preprocessor("resample", sfreq=128, verbose=False,apply_on_array=False),
 ]
 
 # 创建 RawDataset，再包装进 BaseConcatDataset
 raw_dataset = RawDataset(raw, pd.Series({"subject": 0, "session": "train"}))
 dataset = BaseConcatDataset([raw_dataset])
+# preprocess() 会直接修改数据集内部的 raw 对象
 preprocess(dataset, preprocessors_list)
+"""
+preprocess() 之后的 dataset 仍然是 BaseConcatDataset ，它不是 PyTorch 风格的 Dataset。 
+BaseConcatDataset 只是一个原始数据的容器，内部存的还是 MNE 的 Raw 对象，不支持 __getitem__ 和 __len__ 的 PyTorch 协议。
+要变成 PyTorch 兼容的 Dataset，需要通过 create_windows_from_events() 将连续的 raw 数据切分成固定大小的窗口，
+生成 WindowsDataset ——这才是实现了 PyTorch Dataset 接口的对象。
+整个流程是：
+原始 raw 数据
+    ↓
+BaseConcatDataset (数据容器，非 PyTorch Dataset)
+    ↓ preprocess()
+BaseConcatDataset (预处理后，仍是容器)
+    ↓ create_windows_from_events()
+WindowsDataset (PyTorch Dataset ✅)
+    ↓ DataLoader
+可以直接喂给模型训练
+"""
 print(f"预处理完成，采样率: {dataset.datasets[0].raw.info['sfreq']} Hz")
+"""
+dataset.datasets[0].raw.info['sfreq']
+   │       │      │   │     │
+   │       │      │   │     └── 采样率 (128 Hz)
+   │       │      │   └── MNE 的 Info 对象
+   │       │      └── RawDataset 内部持有的 MNE Raw 对象
+   │       └── 容器中第 1 个子数据集（即 raw_dataset）
+   └── BaseConcatDataset（数据容器）
+"""
 
 # ============================================================
 # 3. Trialwise Decoding（试次级解码）
