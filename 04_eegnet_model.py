@@ -211,16 +211,16 @@ print(f"  参数量: {sum(p.numel() for p in model_manual.parameters()):,}")
 print("\n3. 使用 braindecode 的 EEGNet")
 print("-" * 40)
 
-from braindecode.models import EEGNetv4
+from braindecode.models import EEGNet
 
 # braindecode 提供了 EEGNet 的标准实现
-model_braindecode = EEGNetv4(
-    in_chans=22,
+model_braindecode = EEGNet(
+    n_chans=22,
     n_times=1000,
-    n_classes=4,
+    n_outputs=4,
     F1=8,
     F2=16,
-    depth=2,
+    D=2,
     kernel_length=125,
     drop_prob=0.5,
 )

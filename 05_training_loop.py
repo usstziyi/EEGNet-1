@@ -60,15 +60,15 @@ print(f"类别分布: {torch.bincount(y_train)}")
 print("\n2. 定义模型")
 print("-" * 40)
 
-from braindecode.models import EEGNetv4
+from braindecode.models import EEGNet
 
-model = EEGNetv4(
-    in_chans=n_channels,
+model = EEGNet(
+    n_chans=n_channels,
     n_times=n_times,
-    n_classes=n_classes,
+    n_outputs=n_classes,
     F1=8,
     F2=16,
-    depth=2,
+    D=2,
     kernel_length=125,
 )
 
@@ -298,10 +298,10 @@ from braindecode.classifier import EEGClassifier
 
 # 创建 EEGClassifier
 clf = EEGClassifier(
-    module=EEGNetv4,
-    module__in_chans=n_channels,
+    module=EEGNet,
+    module__n_chans=n_channels,
     module__n_times=n_times,
-    module__n_classes=n_classes,
+    module__n_outputs=n_classes,
     max_epochs=5,
     batch_size=64,
     lr=0.001,
@@ -313,7 +313,7 @@ clf = EEGClassifier(
 )
 
 print(f"EEGClassifier 已创建")
-print(f"  - 模型: EEGNetv4")
+print(f"  - 模型: EEGNet")
 print(f"  - 最大 epoch: {clf.max_epochs}")
 print(f"  - 批次大小: {clf.batch_size}")
 

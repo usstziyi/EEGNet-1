@@ -63,12 +63,12 @@ from braindecode.models import ShallowFBCSPNet
 
 # 创建模型
 shallow_net = ShallowFBCSPNet(
-    in_chans=22,
-    n_classes=4,
+    n_chans=22,
+    n_outputs=4,
     n_times=1000,
     final_conv_length="auto",
     n_filters_time=40,
-    n_filters_spatial=40,
+    n_filters_spat=40,
     pool_time_length=75,
     pool_time_stride=15,
 )
@@ -101,15 +101,13 @@ ShallowConvNet 架构：
 print("\n3. DeepConvNet")
 print("-" * 40)
 
-from braindecode.models import DeepConvNet
+from braindecode.models import Deep4Net
 
 # 创建模型
-deep_net = DeepConvNet(
-    in_chans=22,
-    n_classes=4,
+deep_net = Deep4Net(
+    n_chans=22,
+    n_outputs=4,
     n_times=1000,
-    n_filters=[25, 50, 100, 200],
-    kernel_sizes=[10, 3, 3, 3],
     stride_before_pool=False,
 )
 
@@ -144,12 +142,12 @@ from braindecode.models import ATCNet
 
 # 创建模型
 atcnet = ATCNet(
-    in_chans=22,
-    n_classes=4,
+    n_chans=22,
+    n_outputs=4,
     n_times=1000,
     n_windows=2,
-    att_head=2,
-    n_filters=30,
+    num_heads=2,
+    conv_block_n_filters=30,
 )
 
 print(f"ATCNet:")
@@ -182,8 +180,8 @@ from braindecode.models import TCN
 
 # 创建模型
 tcn = TCN(
-    in_chans=22,
-    n_classes=4,
+    n_chans=22,
+    n_outputs=4,
     n_filters=50,
     kernel_size=4,
     drop_prob=0.2,
@@ -215,14 +213,14 @@ TCN 架构：
 print("\n6. 模型比较")
 print("-" * 40)
 
-from braindecode.models import EEGNetv4
+from braindecode.models import EEGNet
 
 models = {
-    "EEGNet": EEGNetv4(in_chans=22, n_times=1000, n_classes=4),
-    "ShallowConvNet": ShallowFBCSPNet(in_chans=22, n_times=1000, n_classes=4),
-    "DeepConvNet": DeepConvNet(in_chans=22, n_times=1000, n_classes=4),
-    "ATCNet": ATCNet(in_chans=22, n_times=1000, n_classes=4),
-    "TCN": TCN(in_chans=22, n_times=1000, n_classes=4),
+    "EEGNet": EEGNet(n_chans=22, n_times=1000, n_outputs=4),
+    "ShallowConvNet": ShallowFBCSPNet(n_chans=22, n_times=1000, n_outputs=4),
+    "DeepConvNet": Deep4Net(n_chans=22, n_times=1000, n_outputs=4),
+    "ATCNet": ATCNet(n_chans=22, n_times=1000, n_outputs=4),
+    "TCN": TCN(n_chans=22, n_outputs=4),
 }
 
 print(f"{'模型':<20} {'参数量':>12} {'推理时间 (ms)':>15}")
@@ -305,8 +303,8 @@ class EnsembleModel(nn.Module):
 # 创建集成模型
 ensemble = EnsembleModel(
     [
-        EEGNetv4(in_chans=22, n_times=1000, n_classes=4),
-        ShallowFBCSPNet(in_chans=22, n_times=1000, n_classes=4),
+        EEGNet(n_chans=22, n_times=1000, n_outputs=4),
+        ShallowFBCSPNet(n_chans=22, n_times=1000, n_outputs=4),
     ]
 )
 
@@ -361,7 +359,7 @@ print("""
 
 # 示例：跨被试迁移学习
 print("# 1. 在源被试上预训练")
-print("source_model = EEGNetv4(in_chans=22, n_times=1000, n_classes=4)")
+print("source_model = EEGNet(n_chans=22, n_times=1000, n_outputs=4)")
 print("# ... 训练源模型 ...")
 print("")
 print("# 2. 冻结部分层")

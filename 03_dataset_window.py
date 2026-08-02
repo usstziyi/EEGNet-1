@@ -17,11 +17,12 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 
-from braindecode.datasets import BaseDataset, BaseConcatDataset
+from braindecode.datasets import RawDataset, BaseConcatDataset
 from braindecode.preprocessing import (
+    # 从 events（即 MNE annotations/事件标记）创建窗口，而非从 epochs 创建
     create_windows_from_events,
-    Preprocessor,
-    preprocess,
+    Preprocessor,  # 预处理器类，用于定义具体的预处理操作（如滤波、重采样等）
+    preprocess,    # 预处理执行函数，将预处理器列表批量应用到数据集上
 )
 
 print("=" * 60)
@@ -69,8 +70,9 @@ preprocessors_list = [
     Preprocessor("resample", sfreq=128, verbose=False),
 ]
 
-# 创建 BaseDataset
-dataset = BaseDataset(raw, pd.Series({"subject": 0, "session": "train"}))
+# 创建 RawDataset，再包装进 BaseConcatDataset
+raw_dataset = RawDataset(raw, pd.Series({"subject": 0, "session": "train"}))
+dataset = BaseConcatDataset([raw_dataset])
 preprocess(dataset, preprocessors_list)
 print(f"预处理完成，采样率: {dataset.datasets[0].raw.info['sfreq']} Hz")
 
@@ -81,10 +83,11 @@ print("\n3. Trialwise Decoding（试次级解码）")
 print("-" * 40)
 
 # Trialwise: 每个 trial 提取一个固定长度的窗口，产生一个预测
+# trial_stop_offset_samples=512: trial 持续 4 秒 (512 samples @ 128Hz)
 windows_trialwise = create_windows_from_events(
     dataset,
     trial_start_offset_samples=0,
-    trial_stop_offset_samples=0,
+    trial_stop_offset_samples=512,
     window_size_samples=512,  # 4 秒 @ 128Hz
     window_stride_samples=512,  # 无重叠
     preload=True,
@@ -104,10 +107,11 @@ print("-" * 40)
 
 # Cropped: 使用滑动窗口，一个 trial 产生多个重叠的窗口
 # 每个窗口都有独立的标签，训练时产生更多样本
+# trial_stop_offset_samples=512: trial 持续 4 秒，滑动窗口可产生多个样本
 windows_cropped = create_windows_from_events(
     dataset,
     trial_start_offset_samples=0,
-    trial_stop_offset_samples=0,
+    trial_stop_offset_samples=512,
     window_size_samples=256,  # 2 秒窗口
     window_stride_samples=64,  # 0.5 秒步长（75% 重叠）
     preload=True,
@@ -146,7 +150,7 @@ train_loader = DataLoader(
     batch_size=batch_size,
     shuffle=True,
     num_workers=0,  # macOS 上建议用 0
-    drop_last=True,
+    drop_last=False,
 )
 
 val_loader = DataLoader(
@@ -201,16 +205,16 @@ print("-" * 40)
 
 # braindecode 提供了多种 EEG 特定的数据增强方法
 from braindecode.augmentation import (
-    FreqShift,
+    FrequencyShift,
     ChannelsDropout,
-    TimeReversal,
+    TimeReverse,
     SignFlip,
 )
 from braindecode.augmentation import Transform
 
 # 创建增强管道
 transforms = [
-    FreqShift(probability=0.5, sfreq=128, max_shift=2.0),
+    FrequencyShift(probability=0.5, sfreq=128, max_delta_freq=2.0),
     ChannelsDropout(probability=0.3, p_drop=0.1),
     SignFlip(probability=0.5),
 ]
@@ -253,8 +257,9 @@ def get_data_loaders(
     返回:
         train_loader, val_loader
     """
-    # 1. 创建 BaseDataset
-    dataset = BaseDataset(raw, pd.Series({"subject": 0, "session": "train"}))
+    # 1. 创建 RawDataset，再包装进 BaseConcatDataset
+    raw_dataset = RawDataset(raw, pd.Series({"subject": 0, "session": "train"}))
+    dataset = BaseConcatDataset([raw_dataset])
 
     # 2. 预处理
     preprocessors = [
@@ -266,6 +271,8 @@ def get_data_loaders(
     # 3. 创建窗口
     windows = create_windows_from_events(
         dataset,
+        trial_start_offset_samples=0,
+        trial_stop_offset_samples=512,
         window_size_samples=window_size,
         window_stride_samples=window_stride,
         preload=True,

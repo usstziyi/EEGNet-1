@@ -123,9 +123,9 @@ try:
     windows_dataset = create_windows_from_events(
         dataset,
         trial_start_offset_samples=0,
-        trial_stop_offset_samples=0,
-        window_size_samples=int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
-        window_stride_samples=int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
+        trial_stop_offset_samples=n_times,
+        window_size_samples=n_times,
+        window_stride_samples=n_times,
         preload=True,
     )
     print(f"窗口数据集: {len(windows_dataset)} 个样本")
@@ -194,29 +194,29 @@ if not data_loaded:
 print("\n4. 定义模型")
 print("-" * 40)
 
-from braindecode.models import EEGNetv4, ShallowFBCSPNet, DeepConvNet
+from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net
 
 # 定义要比较的模型
 models_dict = {
-    "EEGNet": EEGNetv4(
-        in_chans=CONFIG["n_channels"],
+    "EEGNet": EEGNet(
+        n_chans=CONFIG["n_channels"],
         n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
-        n_classes=CONFIG["n_classes"],
+        n_outputs=CONFIG["n_classes"],
         F1=CONFIG["f1"],
         F2=CONFIG["f2"],
-        depth=CONFIG["depth"],
+        D=CONFIG["depth"],
         kernel_length=CONFIG["kernel_length"],
         drop_prob=CONFIG["dropout"],
     ),
     "ShallowConvNet": ShallowFBCSPNet(
-        in_chans=CONFIG["n_channels"],
+        n_chans=CONFIG["n_channels"],
         n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
-        n_classes=CONFIG["n_classes"],
+        n_outputs=CONFIG["n_classes"],
     ),
-    "DeepConvNet": DeepConvNet(
-        in_chans=CONFIG["n_channels"],
+    "DeepConvNet": Deep4Net(
+        n_chans=CONFIG["n_channels"],
         n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
-        n_classes=CONFIG["n_classes"],
+        n_outputs=CONFIG["n_classes"],
     ),
 }
 
