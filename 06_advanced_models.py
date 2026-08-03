@@ -43,6 +43,8 @@ braindecode 中的经典模型：
    - 适用: 大数据集，复杂任务
 
 4. ATCNet
+   - Attention Temporal Convolution
+   - 中文：注意力时序卷积
    - 参数量: ~10,000
    - 特点: 结合注意力机制和 TCN
    - 适用: 需要时序建模的任务
