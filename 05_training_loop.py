@@ -31,7 +31,7 @@ print("-" * 40)
 # 模拟 EEG 数据
 n_samples = 1000 # batch
 n_channels = 22
-n_times = 1000 # time steps
+n_times = 1000 # 4s @ 250Hz = 1000 steps
 n_classes = 4 # 0, 1, 2, 3
 
 # 生成随机数据
