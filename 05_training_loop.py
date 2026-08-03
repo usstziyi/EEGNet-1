@@ -35,8 +35,8 @@ n_times = 1000 # time steps
 n_classes = 4 # 0, 1, 2, 3
 
 # 生成随机数据
-X = torch.randn(n_samples, n_channels, n_times) # (batch, channels, time)
-y = torch.randint(0, n_classes, (n_samples,)) # (batch,)
+X = torch.randn(n_samples, n_channels, n_times) # (samples, channels, time)
+y = torch.randint(0, n_classes, (n_samples,)) # (samples,)
 
 # 划分训练集和验证集
 n_train = int(0.8 * n_samples)
@@ -71,7 +71,8 @@ model = EEGNet(
     F2=16,
     D=2,
     kernel_length=125,
-)
+) # output: (samples, n_classes)
+# braindecode 的 EEGNet 输出的是 softmax 之前的得分（logits）
 
 print(f"模型: {type(model).__name__}")
 print(f"参数量: {sum(p.numel() for p in model.parameters()):,}")
@@ -83,15 +84,18 @@ print("\n3. 损失函数和优化器")
 print("-" * 40)
 
 # 损失函数
-criterion = nn.CrossEntropyLoss()
+# 中文名称：交叉熵损失函数
+criterion = nn.CrossEntropyLoss() 
 print(f"损失函数: {criterion}")
 
 # 优化器
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+# 中文名称：AdamW 优化器
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01) 
 print(f"优化器: {optimizer}")
 
 # 学习率调度器
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+# 中文名称：余弦退火学习率调度器
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6) 
 print(f"学习率调度器: CosineAnnealingLR")
 
 # ============================================================
@@ -113,7 +117,10 @@ def train_epoch(model, loader, criterion, optimizer, device):
         y_batch = y_batch.to(device)
 
         # 前向传播
+        # braindecode 的 EEGNet 输出的是 softmax 之前的得分（logits）
+        # shape: (samples, n_classes)
         outputs = model(X_batch)
+        # PyTorch 的 CrossEntropyLoss 内部已经包含了 log_softmax ，所以它接收的是 logits
         loss = criterion(outputs, y_batch)
 
         # 反向传播
@@ -123,6 +130,7 @@ def train_epoch(model, loader, criterion, optimizer, device):
 
         # 统计
         total_loss += loss.item() * X_batch.size(0)
+        # 丢弃最大值本身（不用），保留最大值的索引，即预测的类别
         _, predicted = outputs.max(1)
         total += y_batch.size(0)
         correct += predicted.eq(y_batch).sum().item()
@@ -164,7 +172,13 @@ print("\n5. 完整训练流程")
 print("-" * 40)
 
 # 设备选择
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# 设备选择：优先使用 CUDA，其次使用 MPS，最后使用 CPU
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 model = model.to(device)
 print(f"使用设备: {device}")
 
@@ -286,6 +300,8 @@ plt.savefig("training_history.png", dpi=150)
 print("训练历史图已保存到: training_history.png")
 plt.close()
 
+
+
 # ============================================================
 # 7. 使用 braindecode 的 EEGClassifier
 # ============================================================
@@ -298,17 +314,18 @@ from braindecode.classifier import EEGClassifier
 # 它封装了训练循环，使用更简洁
 
 # 创建 EEGClassifier
+# <组件名>__<参数名> 用于传递模型参数
 clf = EEGClassifier(
     module=EEGNet,
-    module__n_chans=n_channels,
-    module__n_times=n_times,
-    module__n_outputs=n_classes,
+    module__n_chans=n_channels, # 传给 EEGNet(n_chans=22)
+    module__n_times=n_times, # 传给 EEGNet(n_times=1000)
+    module__n_outputs=n_classes, # 传给 EEGNet(n_outputs=4)
     max_epochs=5,
     batch_size=64,
     lr=0.001,
     device=device,
     optimizer=torch.optim.AdamW,
-    optimizer__weight_decay=0.01,
+    optimizer__weight_decay=0.01, # AdamW(weight_decay=0.01)
     train_split=None,  # 不使用内置验证集划分
     verbose=1,
 )
@@ -338,12 +355,12 @@ print("\n8. 模型评估指标")
 print("-" * 40)
 
 from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    confusion_matrix,
-    classification_report,
+    accuracy_score,      # 准确率：预测正确的样本数占总样本数的比例
+    precision_score,     # 精确率（查准率）：在所有预测为正类的样本中，真正为正类的比例
+    recall_score,        # 召回率（查全率）：在所有真正为正类的样本中，被正确预测为正类的比例
+    f1_score,            # F1 分数：精确率和召回率的调和平均值，综合评估模型性能
+    confusion_matrix,    # 混淆矩阵：展示预测结果与真实标签之间的对应关系
+    classification_report,  # 分类报告：生成包含每个类别精确率、召回率、F1 分数的详细报告
 )
 
 # 使用手动训练的模型进行预测
@@ -357,10 +374,10 @@ with torch.no_grad():
 y_true = y_val.numpy()
 
 # 计算指标
-acc = accuracy_score(y_true, y_pred_manual)
-precision = precision_score(y_true, y_pred_manual, average="macro")
-recall = recall_score(y_true, y_pred_manual, average="macro")
-f1 = f1_score(y_true, y_pred_manual, average="macro")
+acc = accuracy_score(y_true, y_pred_manual)                         # 准确率：预测正确的样本数占总样本数的比例
+precision = precision_score(y_true, y_pred_manual, average="macro") # 精确率（查准率）：在所有预测为正类的样本中，真正为正类的比例
+recall = recall_score(y_true, y_pred_manual, average="macro")       # 召回率（查全率）：在所有真正为正类的样本中，被正确预测为正类的比例
+f1 = f1_score(y_true, y_pred_manual, average="macro")               # F1 分数：精确率和召回率的调和平均值，综合评估模型性能
 
 print(f"准确率 (Accuracy): {acc:.4f}")
 print(f"精确率 (Precision): {precision:.4f}")
@@ -378,7 +395,7 @@ print(cm)
 # 可视化混淆矩阵
 fig, ax = plt.subplots(figsize=(8, 6))
 im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
-ax.figure.colorbar(im, ax=ax)
+ax.figure.colorbar(im, ax=ax) # 添加颜色条
 
 classes = [f"Class {i}" for i in range(n_classes)]
 ax.set(
@@ -395,7 +412,7 @@ plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
 
 # 在每个单元格中显示数值
 fmt = "d"
-thresh = cm.max() / 2.0
+thresh = cm.max() / 2.0  # 阈值 = 最大值的一半
 for i in range(cm.shape[0]):
     for j in range(cm.shape[1]):
         ax.text(
