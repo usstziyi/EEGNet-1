@@ -61,18 +61,19 @@ braindecode 中的经典模型：
 print("\n2. ShallowConvNet")
 print("-" * 40)
 
+# ShallowConvNet （浅层 ConvNet）→ braindecode 命名为 ShallowFBCSPNet
 from braindecode.models import ShallowFBCSPNet
 
 # 创建模型
 shallow_net = ShallowFBCSPNet(
-    n_chans=22,
-    n_outputs=4,
-    n_times=1000,
-    final_conv_length="auto",
-    n_filters_time=40,
-    n_filters_spat=40,
-    pool_time_length=75,
-    pool_time_stride=15,
+    n_chans=22,          # 输入通道数（电极数），这里使用 22 通道 EEG
+    n_outputs=4,         # 输出类别数，对应 4 种运动想象任务
+    n_times=1000,        # 每个通道的时间采样点数，即时间序列长度
+    final_conv_length="auto",  # 最终卷积层长度，"auto" 表示自动根据输入调整
+    n_filters_time=40,   # 时间卷积滤波器数量，提取时间特征
+    n_filters_spat=40,   # 空间卷积滤波器数量，提取空间特征
+    pool_time_length=75, # 时间池化窗口长度，用于降采样
+    pool_time_stride=15, # 时间池化步长，控制池化窗口的移动
 )
 
 print(f"ShallowConvNet:")
@@ -103,14 +104,15 @@ ShallowConvNet 架构：
 print("\n3. DeepConvNet")
 print("-" * 40)
 
+# DeepConvNet （深层 ConvNet）→ braindecode 命名为 Deep4Net
 from braindecode.models import Deep4Net
 
 # 创建模型
 deep_net = Deep4Net(
-    n_chans=22,
-    n_outputs=4,
-    n_times=1000,
-    stride_before_pool=False,
+    n_chans=22,          # 输入通道数（电极数），这里使用 22 通道 EEG
+    n_outputs=4,         # 输出类别数，对应 4 种运动想象任务
+    n_times=1000,        # 每个通道的时间采样点数，即时间序列长度
+    stride_before_pool=False,  # 是否在池化前使用步长卷积进行降采样，False 表示使用正常卷积
 )
 
 print(f"DeepConvNet:")
@@ -140,16 +142,25 @@ DeepConvNet 架构：
 print("\n4. ATCNet")
 print("-" * 40)
 
+# Attention Temporal Convolution
+# 中文：注意力时序卷积
+# ATCNet （Attention Temporal Convolutional Network）是结合了 注意力机制 和 时序卷积网络（TCN） 的 EEG 解码模型。
+# 总参数量约 186,404。
+# ATCNet 的核心创新在于 
+   # 用 Attention 做特征选择、
+   # 用 TCN 做时序建模、
+   # 用多窗口捕捉不同时间尺度的信息 ，三者组合实现了强大的 EEG 解码能力。
+
 from braindecode.models import ATCNet
 
 # 创建模型
 atcnet = ATCNet(
-    n_chans=22,
-    n_outputs=4,
-    n_times=1000,
-    n_windows=2,
-    num_heads=2,
-    conv_block_n_filters=30,
+    n_chans=22,            # 输入通道数（电极数），这里使用 22 通道 EEG
+    n_outputs=4,           # 输出类别数，对应 4 种运动想象任务
+    n_times=1000,          # 每个通道的时间采样点数，即时间序列长度
+    n_windows=2,           # 时间窗口数量，用于多窗口处理时序特征
+    num_heads=2,           # 多头注意力机制的头数，决定注意力的并行粒度
+    conv_block_n_filters=30,  # 卷积块中滤波器的数量，控制特征提取的丰富度
 )
 
 print(f"ATCNet:")
@@ -178,6 +189,10 @@ ATCNet 架构：
 print("\n5. TCN")
 print("-" * 40)
 
+# braindecode 中的 TCN 是基于 因果膨胀卷积 的时序建模模型，总参数量约 56,354。
+# TCN 的两大核心特点：
+# 1. 因果卷积（Causal Convolution） ：只看过去，不看未来
+# 2. 膨胀卷积（Dilated Convolution） ：指数级扩大感受野
 from braindecode.models import TCN
 
 # 创建模型
@@ -293,20 +308,23 @@ class EnsembleModel(nn.Module):
     """简单的模型集成"""
 
     def __init__(self, models):
-        super().__init__()
-        self.models = nn.ModuleList(models)
+      super().__init__()
+      # 将传入的模型列表包装成 PyTorch 的 ModuleList，
+      # 这样所有子模型的参数都会自动注册到父模块中，
+      # 便于统一管理、保存和加载模型权重
+      self.models = nn.ModuleList(models)
 
     def forward(self, x):
-        # 对每个模型的输出求平均
-        outputs = [model(x) for model in self.models]
-        return torch.stack(outputs).mean(dim=0)
+      # 对每个模型的输出求平均
+      outputs = [model(x) for model in self.models]
+      return torch.stack(outputs).mean(dim=0)
 
 
 # 创建集成模型
 ensemble = EnsembleModel(
     [
-        EEGNet(n_chans=22, n_times=1000, n_outputs=4),
-        ShallowFBCSPNet(n_chans=22, n_times=1000, n_outputs=4),
+      EEGNet(n_chans=22, n_times=1000, n_outputs=4),
+      ShallowFBCSPNet(n_chans=22, n_times=1000, n_outputs=4),
     ]
 )
 
