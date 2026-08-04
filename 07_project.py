@@ -29,7 +29,10 @@ from torch.utils.data import DataLoader
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold
+import mne
 from sklearn.metrics import accuracy_score, cohen_kappa_score
+# 在 BCI 运动想象领域， Kappa 系数是比准确率更常用的指标 ，因为它能更客观地反映模型对 EEG 信号的真实解码能力。
+# kappa = (观察到的一致率 - 随机一致率) / (1 - 随机一致率)
 
 print("=" * 60)
 print("实战项目：运动想象 EEG 解码")
@@ -46,13 +49,15 @@ CONFIG = {
     "subject_id": 1,  # 被试 ID (1-9)
     "n_classes": 4,  # 4 类运动想象
     "n_channels": 22,  # EEG 通道数
-    "sfreq": 250,  # 采样率
+    "sfreq": 128,  # 采样率（降采样后）
     "tmin": 0.0,  # trial 开始时间（秒）
-    "tmax": 6.0,  # trial 结束时间（秒）
+    "tmax": 4.0,  # trial 结束时间（秒），BCI 运动想象持续 4 秒
     "f1": 8,  # EEGNet 参数
     "f2": 16,
     "depth": 2,
-    "kernel_length": 125,
+    "kernel_length": 64,
+    "pool1_kernel_size": 4,
+    "pool2_kernel_size": 8,
     "dropout": 0.5,
     "batch_size": 64,
     "n_epochs": 50,
@@ -72,7 +77,7 @@ torch.manual_seed(CONFIG["random_seed"])
 np.random.seed(CONFIG["random_seed"])
 
 # 计算时间窗口长度（始终定义，避免后续引用错误）
-n_times = int((CONFIG["tmax"] - CONFIG["tmin"]) * 128)
+n_times = int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"])
 
 # ============================================================
 # 2. 数据加载（使用 MOABB）
@@ -84,37 +89,41 @@ try:
     from braindecode.datasets import MOABBDataset
     from braindecode.preprocessing import (
         preprocess,
-        Preprocessor,
+        PickTypes, # 选择 EEG 通道
+        Filter,    # 带通滤波
+        Resample,  # 降采样到 128 Hz
+        Rescale,   # 转换为伏特（数据从微伏转为伏特）
+        SetEEGReference, # 设置平均参考
         create_windows_from_events,
     )
-
+    """
+    Subject（被试 / 人）
+    └── Session（会话 / 天）
+            └── Run（轮次 / 单次采集文件）
+                └── Trial（试次 / 单个刺激事件）
+    """
     # 加载 BCI Competition IV 2a 数据集
     print(f"正在加载被试 {CONFIG['subject_id']} 的数据...")
     dataset = MOABBDataset(
-        dataset_name="BNCI2014001",  # BCI Competition IV 2a
-        subject_ids=[CONFIG["subject_id"]],
+        dataset_name="BNCI2014_001",  # BCI Competition IV 2a
+        subject_ids=[1],
     )
-    print(f"数据集加载成功: {len(dataset.datasets)} 个 session")
+
+    print(dataset.description)
 
     # 数据预处理
     print("\n应用预处理...")
     # 注意：MOABB 返回的数据单位通常是微伏(μV)，需要乘以 1e-6 转换为伏特(V)
     # braindecode 期望的输入单位是伏特
+    mne.set_log_level("ERROR")  # 关闭 mne 日志，避免打印警告
     preprocessors = [
-        # 选择 EEG 通道
-        Preprocessor("pick_types", eeg=True, misc=False),
-        # 转换为伏特（数据从微伏转为伏特）
-        Preprocessor(lambda data: data * 1e-6),
-        # 带通滤波
-        Preprocessor("filter", l_freq=4.0, h_freq=38.0),
-        # 降采样
-        Preprocessor("resample", sfreq=128),
+        PickTypes(eeg=True, misc=False),         # 选择 EEG 通道
+        Filter(l_freq=4.0, h_freq=38.0),         # 带通滤波（在 μV 量级上进行，精度更高）
+        Resample(sfreq=CONFIG["sfreq"]),         # 降采样到 128 Hz
+        SetEEGReference(ref_channels="average"), # 设置平均参考
+        Rescale(scalings=1e-6),                  # 最后转换为伏特（数据从微伏转为伏特）
     ]
     preprocess(dataset, preprocessors)
-
-    # 设置平均参考（set_eeg_reference 返回元组，不适合放在 Preprocessor 中）
-    for ds in dataset.datasets:
-        ds.raw.set_eeg_reference("average", projection=False)
 
     print("预处理完成")
 
@@ -123,11 +132,11 @@ try:
     windows_dataset = create_windows_from_events(
         dataset,
         trial_start_offset_samples=0,
-        trial_stop_offset_samples=n_times,
+        trial_stop_offset_samples=0,
         window_size_samples=n_times,
         window_stride_samples=n_times,
         preload=True,
-    )
+    ) # Trialwise Decoding 试次级解码
     print(f"窗口数据集: {len(windows_dataset)} 个样本")
 
     # 检查数据
@@ -142,6 +151,7 @@ except Exception as e:
     print("使用模拟数据进行演示...")
     data_loaded = False
 
+exit(0)
 # ============================================================
 # 3. 创建模拟数据（如果 MOABB 不可用）
 # ============================================================
@@ -154,7 +164,7 @@ if not data_loaded:
     n_sessions = 2  # train + test
     n_trials_per_session = 144
     n_channels = CONFIG["n_channels"]
-    n_times = int((CONFIG["tmax"] - CONFIG["tmin"]) * 128)
+    n_times = int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"])
     n_classes = CONFIG["n_classes"]
 
     # 创建模拟数据
@@ -200,22 +210,24 @@ from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net
 models_dict = {
     "EEGNet": EEGNet(
         n_chans=CONFIG["n_channels"],
-        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
+        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"]),
         n_outputs=CONFIG["n_classes"],
         F1=CONFIG["f1"],
         F2=CONFIG["f2"],
         D=CONFIG["depth"],
         kernel_length=CONFIG["kernel_length"],
+        pool1_kernel_size=CONFIG["pool1_kernel_size"],
+        pool2_kernel_size=CONFIG["pool2_kernel_size"],
         drop_prob=CONFIG["dropout"],
     ),
     "ShallowConvNet": ShallowFBCSPNet(
         n_chans=CONFIG["n_channels"],
-        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
+        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"]),
         n_outputs=CONFIG["n_classes"],
     ),
     "DeepConvNet": Deep4Net(
         n_chans=CONFIG["n_channels"],
-        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * 128),
+        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"]),
         n_outputs=CONFIG["n_classes"],
     ),
 }
@@ -249,6 +261,7 @@ def train_model(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
 
     best_val_acc = 0.0
+    best_model_state = model.state_dict()
     patience_counter = 0
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
@@ -312,7 +325,7 @@ def train_model(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience_counter = 0
-            best_model_state = model.state_dict().copy()
+            best_model_state = copy.deepcopy(model.state_dict())
         else:
             patience_counter += 1
             if patience_counter >= patience:
