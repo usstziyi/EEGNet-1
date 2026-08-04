@@ -30,6 +30,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import KFold
 import mne
+import copy
 from sklearn.metrics import accuracy_score, cohen_kappa_score
 # 在 BCI 运动想象领域， Kappa 系数是比准确率更常用的指标 ，因为它能更客观地反映模型对 EEG 信号的真实解码能力。
 # kappa = (观察到的一致率 - 随机一致率) / (1 - 随机一致率)
@@ -52,6 +53,7 @@ CONFIG = {
     "sfreq": 128,  # 采样率（降采样后）
     "tmin": 0.0,  # trial 开始时间（秒）
     "tmax": 4.0,  # trial 结束时间（秒），BCI 运动想象持续 4 秒
+    "n_times": 512,  # 时间窗口长度（样本数）
     "f1": 8,  # EEGNet 参数
     "f2": 16,
     "depth": 2,
@@ -76,8 +78,6 @@ for key, value in CONFIG.items():
 torch.manual_seed(CONFIG["random_seed"])
 np.random.seed(CONFIG["random_seed"])
 
-# 计算时间窗口长度（始终定义，避免后续引用错误）
-n_times = int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"])
 
 # ============================================================
 # 2. 数据加载（使用 MOABB）
@@ -126,82 +126,52 @@ try:
     preprocess(dataset, preprocessors)
 
     print("预处理完成")
+    """
+    原始数据:
+    BaseConcatDataset
+    └── RawDataset (subject=1, session=0train, run=0)
+    └── RawDataset (subject=1, session=0train, run=1)
+    └── ...
+    └── RawDataset (subject=1, session=1test, run=5)
 
+    ↓ create_windows_from_events
+
+    窗口数据:
+    BaseConcatDataset
+    └── WindowsDataset (subject=1, session=0train, run=0, 48 windows)
+    └── WindowsDataset (subject=1, session=0train, run=1, 48 windows)
+    └── ...
+    └── WindowsDataset (subject=1, session=1test, run=5, 48 windows)
+    """
     # 创建窗口
     print("\n创建滑动窗口...")
     windows_dataset = create_windows_from_events(
         dataset,
-        trial_start_offset_samples=0,
-        trial_stop_offset_samples=0,
-        window_size_samples=n_times,
-        window_stride_samples=n_times,
+        trial_start_offset_samples=0,  # trial 起始偏移（采样点数），0 表示窗口从 trial 开始事件处开始，若设为正数则延迟开始，负数则提前开始
+        trial_stop_offset_samples=0,   # trial 结束偏移（采样点数），0 表示窗口在 trial 结束事件处结束，若设为正数则延长结束，负数则提前结束
+        window_size_samples=CONFIG["n_times"],
+        window_stride_samples=CONFIG["n_times"],
         preload=True,
-    ) # Trialwise Decoding 试次级解码
+    ) # -> BaseConcatDataset[WindowsDataset | EEGWindowsDataset]
     print(f"窗口数据集: {len(windows_dataset)} 个样本")
+    print(f"窗口数据集类型: {type(windows_dataset)}")
+    print(f"窗口数据集样本类型: {type(windows_dataset[0])}")
 
     # 检查数据
     if len(windows_dataset) > 0:
         X_sample, y_sample, _ = windows_dataset[0]
         print(f"单个样本: X.shape={X_sample.shape}, y={y_sample}")
 
-    data_loaded = True
 
 except Exception as e:
     print(f"数据加载失败: {e}")
     print("使用模拟数据进行演示...")
-    data_loaded = False
 
-exit(0)
-# ============================================================
-# 3. 创建模拟数据（如果 MOABB 不可用）
-# ============================================================
-if not data_loaded:
-    print("\n3. 创建模拟数据")
-    print("-" * 40)
-
-    # 生成模拟 EEG 数据
-    n_subjects = 1
-    n_sessions = 2  # train + test
-    n_trials_per_session = 144
-    n_channels = CONFIG["n_channels"]
-    n_times = int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"])
-    n_classes = CONFIG["n_classes"]
-
-    # 创建模拟数据
-    X_all = []
-    y_all = []
-
-    for session in range(n_sessions):
-        # 生成随机 EEG 数据
-        X_session = np.random.randn(n_trials_per_session, n_channels, n_times)
-        # 生成随机标签
-        y_session = np.random.randint(0, n_classes, n_trials_per_session)
-
-        X_all.append(X_session)
-        y_all.append(y_session)
-
-    # 合并
-    X_all = np.concatenate(X_all, axis=0)
-    y_all = np.concatenate(y_all, axis=0)
-
-    print(f"模拟数据:")
-    print(f"  总样本数: {len(X_all)}")
-    print(f"  样本形状: {X_all.shape}")
-    print(f"  类别分布: {np.bincount(y_all)}")
-
-    # 转换为 PyTorch 数据集
-    from torch.utils.data import TensorDataset
-
-    X_tensor = torch.from_numpy(X_all).float()
-    y_tensor = torch.from_numpy(y_all).long()
-    full_dataset = TensorDataset(X_tensor, y_tensor)
-
-    data_loaded = True
 
 # ============================================================
-# 4. 定义模型
+# 3. 定义模型
 # ============================================================
-print("\n4. 定义模型")
+print("\n3. 定义模型")
 print("-" * 40)
 
 from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net
@@ -210,7 +180,7 @@ from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net
 models_dict = {
     "EEGNet": EEGNet(
         n_chans=CONFIG["n_channels"],
-        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"]),
+        n_times=CONFIG["n_times"],
         n_outputs=CONFIG["n_classes"],
         F1=CONFIG["f1"],
         F2=CONFIG["f2"],
@@ -222,12 +192,12 @@ models_dict = {
     ),
     "ShallowConvNet": ShallowFBCSPNet(
         n_chans=CONFIG["n_channels"],
-        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"]),
+        n_times=CONFIG["n_times"],
         n_outputs=CONFIG["n_classes"],
     ),
     "DeepConvNet": Deep4Net(
         n_chans=CONFIG["n_channels"],
-        n_times=n_times if data_loaded else int((CONFIG["tmax"] - CONFIG["tmin"]) * CONFIG["sfreq"]),
+        n_times=CONFIG["n_times"],
         n_outputs=CONFIG["n_classes"],
     ),
 }
@@ -238,9 +208,9 @@ for name, model in models_dict.items():
     print(f"  {name}: {n_params:,} 参数")
 
 # ============================================================
-# 5. 训练函数
+# 4. 训练函数
 # ============================================================
-print("\n5. 训练函数")
+print("\n4. 训练函数")
 print("-" * 40)
 
 
@@ -325,7 +295,8 @@ def train_model(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience_counter = 0
-            best_model_state = copy.deepcopy(model.state_dict())
+            # 创建一个 完全独立的深拷贝 ，切断与原张量的联系，防止后续训练中修改原张量导致的错误
+            best_model_state = copy.deepcopy(model.state_dict()) 
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -336,111 +307,100 @@ def train_model(
 
     return model, history, best_val_acc
 
-
 # ============================================================
-# 6. 交叉验证
+# 5. 交叉验证
 # ============================================================
-print("\n6. 交叉验证")
+print("\n5. 交叉验证")
 print("-" * 40)
 
 # 设备选择
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+model = model.to(device)
 print(f"使用设备: {device}")
 
 # 存储结果
 results = {name: [] for name in models_dict.keys()}
+print(results)
+
 
 # 交叉验证
 kf = KFold(n_splits=CONFIG["n_folds"], shuffle=True, random_state=CONFIG["random_seed"])
 
-if data_loaded:
-    # 获取数据
-    if "full_dataset" in locals():
-        X_all = full_dataset.tensors[0].numpy()
-        y_all = full_dataset.tensors[1].numpy()
-    else:
-        # 从 windows_dataset 提取
-        X_all = []
-        y_all = []
-        for i in range(len(windows_dataset)):
-            X, y, _ = windows_dataset[i]
-            X_all.append(X.numpy())
-            y_all.append(y)
-        X_all = np.array(X_all)
-        y_all = np.array(y_all)
+# 获取数据
+X_all = []
+y_all = []
+for i in range(len(windows_dataset)):
+    X, y, _ = windows_dataset[i]
+    X_all.append(X)
+    y_all.append(y)
+X_all = np.array(X_all)
+y_all = np.array(y_all)
+print(f"数据形状: X={X_all.shape}, y={y_all.shape}")
+print(f"类别分布: {np.bincount(y_all)}")
 
-    print(f"数据形状: X={X_all.shape}, y={y_all.shape}")
-    print(f"类别分布: {np.bincount(y_all)}")
-
-    # 交叉验证循环
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
-        print(f"\n折 {fold + 1}/{CONFIG['n_folds']}")
-        print("-" * 40)
-
-        # 划分数据
-        X_train, X_val = X_all[train_idx], X_all[val_idx]
-        y_train, y_val = y_all[train_idx], y_all[val_idx]
-
-        print(f"训练集: {len(X_train)}, 验证集: {len(X_val)}")
-
-        # 创建 DataLoader
-        from torch.utils.data import TensorDataset
-
-        train_dataset = TensorDataset(
-            torch.from_numpy(X_train).float(), torch.from_numpy(y_train).long()
+# 交叉验证循环
+for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
+    print(f"\n折 {fold + 1}/{CONFIG['n_folds']}")
+    print("-" * 40)
+    # 划分数据
+    X_train, X_val = X_all[train_idx], X_all[val_idx]
+    y_train, y_val = y_all[train_idx], y_all[val_idx]
+    print(f"训练集: {len(X_train)}, 验证集: {len(X_val)}")
+    # 创建 DataLoader
+    from torch.utils.data import TensorDataset
+    train_dataset = TensorDataset(
+        torch.from_numpy(X_train).float(), 
+        torch.from_numpy(y_train).long()
+    )
+    val_dataset = TensorDataset(
+        torch.from_numpy(X_val).float(), 
+        torch.from_numpy(y_val).long()
+    )
+    train_loader = DataLoader(train_dataset, batch_size=CONFIG["batch_size"], shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+    # 训练每个模型
+    for model_name, model_template in models_dict.items():
+        print(f"\n训练 {model_name}...")
+        # 重新初始化模型
+        import copy
+        # 在 KFold 交叉验证循环 中，每个 fold 都需要一个全新的模型实例
+        model = copy.deepcopy(model_template)
+        # 训练
+        model, history, best_val_acc = train_model(
+            model,
+            train_loader,
+            val_loader,
+            n_epochs=CONFIG["n_epochs"],
+            lr=CONFIG["lr"],
+            weight_decay=CONFIG["weight_decay"],
+            patience=CONFIG["patience"],
+            device=device,
         )
-        val_dataset = TensorDataset(
-            torch.from_numpy(X_val).float(), torch.from_numpy(y_val).long()
-        )
+        # 在验证集上评估
+        model.eval()
+        y_pred = []
+        with torch.no_grad():
+            for X_batch, _ in val_loader:
+                X_batch = X_batch.to(device)
+                outputs = model(X_batch)
+                _, predicted = outputs.max(1)
+                y_pred.extend(predicted.cpu().numpy())
+        y_pred = np.array(y_pred)
+        acc = accuracy_score(y_val, y_pred)
+        kappa = cohen_kappa_score(y_val, y_pred)
+        results[model_name].append({"accuracy": acc, "kappa": kappa})
+        print(f"  {model_name}: Acc={acc:.4f}, Kappa={kappa:.4f}")
 
-        train_loader = DataLoader(
-            train_dataset, batch_size=CONFIG["batch_size"], shuffle=True
-        )
-        val_loader = DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
-
-        # 训练每个模型
-        for model_name, model_template in models_dict.items():
-            print(f"\n训练 {model_name}...")
-
-            # 重新初始化模型
-            import copy
-
-            model = copy.deepcopy(model_template)
-
-            # 训练
-            model, history, best_val_acc = train_model(
-                model,
-                train_loader,
-                val_loader,
-                n_epochs=CONFIG["n_epochs"],
-                lr=CONFIG["lr"],
-                weight_decay=CONFIG["weight_decay"],
-                patience=CONFIG["patience"],
-                device=device,
-            )
-
-            # 在验证集上评估
-            model.eval()
-            y_pred = []
-            with torch.no_grad():
-                for X_batch, _ in val_loader:
-                    X_batch = X_batch.to(device)
-                    outputs = model(X_batch)
-                    _, predicted = outputs.max(1)
-                    y_pred.extend(predicted.cpu().numpy())
-
-            y_pred = np.array(y_pred)
-            acc = accuracy_score(y_val, y_pred)
-            kappa = cohen_kappa_score(y_val, y_pred)
-
-            results[model_name].append({"accuracy": acc, "kappa": kappa})
-
-            print(f"  {model_name}: Acc={acc:.4f}, Kappa={kappa:.4f}")
 
 # ============================================================
-# 7. 结果汇总
+# 6. 结果汇总
 # ============================================================
-print("\n7. 结果汇总")
+print("\n6. 结果汇总")
 print("-" * 40)
 
 # 计算平均性能
@@ -465,9 +425,9 @@ print("\n模型性能比较:")
 print(summary_df.to_string(index=False))
 
 # ============================================================
-# 8. 可视化结果
+# 7. 可视化结果
 # ============================================================
-print("\n8. 可视化结果")
+print("\n7. 可视化结果")
 print("-" * 40)
 
 # 创建可视化
@@ -558,9 +518,9 @@ print("结果图已保存到: project_results.png")
 plt.close()
 
 # ============================================================
-# 9. 保存结果
+# 8. 保存结果
 # ============================================================
-print("\n9. 保存结果")
+print("\n8. 保存结果")
 print("-" * 40)
 
 # 保存为 CSV
