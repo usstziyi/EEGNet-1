@@ -25,10 +25,10 @@ BCI Competition IV 2a 数据集：
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 import mne
 import copy
 from sklearn.metrics import accuracy_score, cohen_kappa_score
@@ -60,12 +60,12 @@ CONFIG = {
     "kernel_length": 64,
     "pool1_kernel_size": 4,
     "pool2_kernel_size": 8,
-    "dropout": 0.5,
-    "batch_size": 64,
+    "dropout": 0.3,
+    "batch_size": 32,
     "n_epochs": 50,
     "lr": 0.001,
-    "weight_decay": 0.01,
-    "patience": 10,  # 早停耐心值
+    "weight_decay": 1e-4,
+    "patience": 1,  # 早停耐心值
     "n_folds": 5,  # 交叉验证折数
     "random_seed": 42,
 }
@@ -157,15 +157,72 @@ try:
     print(f"窗口数据集类型: {type(windows_dataset)}")
     print(f"窗口数据集样本类型: {type(windows_dataset[0])}")
 
-    # 检查数据
-    if len(windows_dataset) > 0:
-        X_sample, y_sample, _ = windows_dataset[0]
-        print(f"单个样本: X.shape={X_sample.shape}, y={y_sample}")
 
+    # 划分训练集和测试集（按 session）
+    print("\n划分训练集和测试集...")
+    # dict[str, WindowsDataset]
+    splits = windows_dataset.split('session')
+    print(f"数据划分 keys: {list(splits.keys())}")
+
+
+    """
+    划分训练集和测试集...
+    数据划分 keys: ['0train', '1test']
+    训练集: 288 个样本 (session=0train)
+    测试集: 288 个样本 (session=1test)
+    """
+
+    train_key = None
+    test_key = None
+    for key in splits.keys():
+        key_str = str(key).lower()
+        if 'train' in key_str: # "0train"
+            train_key = key
+        elif 'test' in key_str: # "1test"
+            test_key = key
+
+    if train_key is None or test_key is None:
+        keys = list(splits.keys())
+        train_key = keys[0]
+        test_key = keys[1]
+        print(f"警告：无法自动识别 train/test，使用 {train_key} 作为 train，{test_key} 作为 test")
+
+    train_dataset = splits[train_key] # WindowsDataset
+    test_dataset = splits[test_key]   # WindowsDataset
+    print(f"训练集: {len(train_dataset)} 个样本 (session={train_key})")
+    print(f"测试集: {len(test_dataset)} 个样本 (session={test_key})")
 
 except Exception as e:
     print(f"数据加载失败: {e}")
     print("使用模拟数据进行演示...")
+
+
+
+# WindowsDataset 转为 numpy 数组格式
+# KFold 需要 numpy 做索引划分
+# 获取训练集数据（仅用于交叉验证）
+X_train_cv = []
+y_train_cv = []
+for i in range(len(train_dataset)):
+    X, y, _ = train_dataset[i]
+    X_train_cv.append(X)
+    y_train_cv.append(y)
+X_train_cv = np.array(X_train_cv)
+y_train_cv = np.array(y_train_cv)
+print(f"训练数据形状: X={X_train_cv.shape}, y={y_train_cv.shape}")
+print(f"训练数据类别分布: {np.bincount(y_train_cv)}")
+
+# 获取测试集数据（用于最终评估）
+X_test = []
+y_test = []
+for i in range(len(test_dataset)):
+    X, y, _ = test_dataset[i]
+    X_test.append(X)
+    y_test.append(y)
+X_test = np.array(X_test)
+y_test = np.array(y_test)
+print(f"测试数据形状: X={X_test.shape}, y={y_test.shape}")
+print(f"测试数据类别分布: {np.bincount(y_test)}")
 
 
 # ============================================================
@@ -231,9 +288,10 @@ def train_model(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
 
     best_val_acc = 0.0
+    best_val_kappa = 0.0
     best_model_state = model.state_dict()
     patience_counter = 0
-    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "val_kappa": []}
 
     for epoch in range(n_epochs):
         # 训练
@@ -265,6 +323,8 @@ def train_model(
         val_loss = 0.0
         val_correct = 0
         val_total = 0
+        val_preds = []
+        val_labels = []
 
         with torch.no_grad():
             for X_batch, y_batch in val_loader:
@@ -278,9 +338,12 @@ def train_model(
                 _, predicted = outputs.max(1)
                 val_total += y_batch.size(0)
                 val_correct += predicted.eq(y_batch).sum().item()
+                val_preds.extend(predicted.cpu().numpy())
+                val_labels.extend(y_batch.cpu().numpy())
 
         val_loss /= val_total
         val_acc = 100.0 * val_correct / val_total
+        val_kappa = cohen_kappa_score(val_labels, val_preds)
 
         # 更新学习率
         scheduler.step()
@@ -290,22 +353,25 @@ def train_model(
         history["train_acc"].append(train_acc)
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
+        history["val_kappa"].append(val_kappa)
 
-        # 早停检查
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        # 早停检查：kappa 或 accuracy 任一变好都更新（避免 kappa 恒为 0 导致的死锁）
+        if val_kappa > best_val_kappa or val_acc > best_val_acc:
+            if val_kappa > best_val_kappa:
+                best_val_kappa = val_kappa
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
             patience_counter = 0
-            # 创建一个 完全独立的深拷贝 ，切断与原张量的联系，防止后续训练中修改原张量导致的错误
-            best_model_state = copy.deepcopy(model.state_dict()) 
+            best_model_state = copy.deepcopy(model.state_dict())
         else:
             patience_counter += 1
             if patience_counter >= patience:
                 break
-
+        print(f"Epoch {epoch + 1}/{n_epochs}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val Kappa: {val_kappa:.4f}")
     # 加载最佳模型
     model.load_state_dict(best_model_state)
 
-    return model, history, best_val_acc
+    return model, history, best_val_acc, best_val_kappa
 
 # ============================================================
 # 5. 交叉验证
@@ -320,7 +386,6 @@ elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
     device = torch.device("mps")
 else:
     device = torch.device("cpu")
-model = model.to(device)
 print(f"使用设备: {device}")
 
 # 存储结果
@@ -328,50 +393,45 @@ results = {name: [] for name in models_dict.keys()}
 print(results)
 
 
-# 交叉验证
-kf = KFold(n_splits=CONFIG["n_folds"], shuffle=True, random_state=CONFIG["random_seed"])
+# 交叉验证:5折
+skf = StratifiedKFold(n_splits=CONFIG["n_folds"], shuffle=True, random_state=CONFIG["random_seed"])
 
-# 获取数据
-X_all = []
-y_all = []
-for i in range(len(windows_dataset)):
-    X, y, _ = windows_dataset[i]
-    X_all.append(X)
-    y_all.append(y)
-X_all = np.array(X_all)
-y_all = np.array(y_all)
-print(f"数据形状: X={X_all.shape}, y={y_all.shape}")
-print(f"类别分布: {np.bincount(y_all)}")
+"""
+    X_train_cv  ← train_dataset (MOABB train session, 288 个 trials)
+     │
+     └── skf.split(X_train_cv, y_train_cv)  ← 5 折交叉验证
+             │
+             ├── X_train (80%) → fold_train_dataset → train_loader
+             └── X_val   (20%) → fold_val_dataset   → val_loader  ← L419 用到的就是这个
+"""
 
 # 交叉验证循环
-for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
+# StratifiedKFold 需要 X 和 y 来保持类别比例
+for fold, (train_idx, val_idx) in enumerate(skf.split(X_train_cv, y_train_cv)):
     print(f"\n折 {fold + 1}/{CONFIG['n_folds']}")
     print("-" * 40)
     # 划分数据
-    X_train, X_val = X_all[train_idx], X_all[val_idx]
-    y_train, y_val = y_all[train_idx], y_all[val_idx]
-    print(f"训练集: {len(X_train)}, 验证集: {len(X_val)}")
+    X_train, X_val = X_train_cv[train_idx], X_train_cv[val_idx]
+    y_train, y_val = y_train_cv[train_idx], y_train_cv[val_idx]
+    print(f"训练集: {len(X_train)},类别：{np.bincount(y_train)}")
+    print(f"验证集: {len(X_val)},类别：{np.bincount(y_val)}")
     # 创建 DataLoader
-    from torch.utils.data import TensorDataset
-    train_dataset = TensorDataset(
+    fold_train_dataset = TensorDataset(
         torch.from_numpy(X_train).float(), 
         torch.from_numpy(y_train).long()
     )
-    val_dataset = TensorDataset(
+    fold_val_dataset = TensorDataset(
         torch.from_numpy(X_val).float(), 
         torch.from_numpy(y_val).long()
     )
-    train_loader = DataLoader(train_dataset, batch_size=CONFIG["batch_size"], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+    train_loader = DataLoader(fold_train_dataset, batch_size=CONFIG["batch_size"], shuffle=True)
+    val_loader = DataLoader(fold_val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+    
     # 训练每个模型
     for model_name, model_template in models_dict.items():
         print(f"\n训练 {model_name}...")
-        # 重新初始化模型
-        import copy
-        # 在 KFold 交叉验证循环 中，每个 fold 都需要一个全新的模型实例
         model = copy.deepcopy(model_template)
-        # 训练
-        model, history, best_val_acc = train_model(
+        model, history, best_val_acc, best_val_kappa = train_model(
             model,
             train_loader,
             val_loader,
@@ -381,29 +441,112 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
             patience=CONFIG["patience"],
             device=device,
         )
-        # 在验证集上评估
-        model.eval()
-        y_pred = []
-        with torch.no_grad():
-            for X_batch, _ in val_loader:
-                X_batch = X_batch.to(device)
-                outputs = model(X_batch)
-                _, predicted = outputs.max(1)
-                y_pred.extend(predicted.cpu().numpy())
-        y_pred = np.array(y_pred)
-        acc = accuracy_score(y_val, y_pred)
-        kappa = cohen_kappa_score(y_val, y_pred)
-        results[model_name].append({"accuracy": acc, "kappa": kappa})
-        print(f"  {model_name}: Acc={acc:.4f}, Kappa={kappa:.4f}")
+        results[model_name].append({"accuracy": best_val_acc / 100.0, "kappa": best_val_kappa})
+        print(f"  {model_name}: Acc={best_val_acc / 100.0:.4f}, Kappa={best_val_kappa:.6f}")
 
 
+for model_name, fold_results in results.items():
+    print(f"\n{model_name} 结果:")
+    for result in fold_results:
+        print(result)
+
 # ============================================================
-# 6. 结果汇总
+# 6. 测试集最终评估
 # ============================================================
-print("\n6. 结果汇总")
+print("\n6. 测试集最终评估")
 print("-" * 40)
 
-# 计算平均性能
+# 设备选择
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+print(f"使用设备: {device}")
+
+# 存储结果
+print(results)
+
+# 对每个模型，在完整训练集上重新训练，然后在测试集上评估
+# 使用 train_test_split 从训练集中划出一部分作为内部验证集（用于早停），避免数据泄漏
+test_results = {}
+for model_name, model_template in models_dict.items():
+    print(f"\n在完整训练集上训练 {model_name}...")
+
+
+    """
+    X_train_cv (288)
+    │
+    ├── train_test_split(test_size=0.1)
+    │       │
+    │       ├── X_tr_final (259, 90%) ──→ final_train_loader
+    │       └── X_val_final (29,  10%) ──→ final_val_loader ──→ 传入 train_model()
+    │                                                              │
+    │                                                      同样的早停逻辑
+    │                                                      监控 final_val_loader
+    """
+    # 划分训练集为最终训练集和内部验证集（用于早停）
+    X_tr_final, X_val_final, y_tr_final, y_val_final = train_test_split(
+        X_train_cv, y_train_cv, test_size=0.1,
+        random_state=CONFIG["random_seed"],  # 控制随机种子，确保每次划分结果可复现
+        stratify=y_train_cv  # 分层划分，保证划分后的训练集和验证集 类别比例 与原始数据一致
+    )
+    print(f"最终训练集: {len(X_tr_final)},类别：{np.bincount(y_tr_final)}")
+    print(f"最终验证集: {len(X_val_final)},类别：{np.bincount(y_val_final)}")
+
+    # 创建 DataLoader
+    final_train_dataset = TensorDataset(
+        torch.from_numpy(X_tr_final).float(),
+        torch.from_numpy(y_tr_final).long()
+    )
+    final_val_dataset = TensorDataset(
+        torch.from_numpy(X_val_final).float(),
+        torch.from_numpy(y_val_final).long()
+    )
+    final_train_loader = DataLoader(final_train_dataset, batch_size=CONFIG["batch_size"], shuffle=True)
+    final_val_loader = DataLoader(final_val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+
+    model = copy.deepcopy(model_template)
+    model, history, best_val_acc, best_val_kappa = train_model(
+        model,
+        final_train_loader,
+        final_val_loader,
+        n_epochs=CONFIG["n_epochs"],
+        lr=CONFIG["lr"],
+        weight_decay=CONFIG["weight_decay"],
+        patience=CONFIG["patience"],
+        device=device,
+    )
+
+    # 在测试集上评估
+    test_tensor_dataset = TensorDataset(
+        torch.from_numpy(X_test).float(),
+        torch.from_numpy(y_test).long()
+    )
+    test_loader = DataLoader(test_tensor_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+
+    model.eval()
+    y_pred_test = []
+    with torch.no_grad():
+        for X_batch, _ in test_loader:
+            X_batch = X_batch.to(device)
+            outputs = model(X_batch)
+            _, predicted = outputs.max(1)
+            y_pred_test.extend(predicted.cpu().numpy())
+    y_pred_test = np.array(y_pred_test)
+    test_acc = accuracy_score(y_test, y_pred_test)
+    test_kappa = cohen_kappa_score(y_test, y_pred_test)
+    test_results[model_name] = {"accuracy": test_acc, "kappa": test_kappa}
+    print(f"  {model_name} 测试集: Acc={test_acc:.4f}, Kappa={test_kappa:.4f}")
+
+# ============================================================
+# 7. 结果汇总
+# ============================================================
+print("\n7. 结果汇总")
+print("-" * 40)
+
+# 计算交叉验证性能
 summary = []
 for model_name, fold_results in results.items():
     if len(fold_results) > 0:
@@ -413,40 +556,43 @@ for model_name, fold_results in results.items():
         summary.append(
             {
                 "Model": model_name,
-                "Accuracy (mean)": np.mean(accs),
-                "Accuracy (std)": np.std(accs),
-                "Kappa (mean)": np.mean(kappas),
-                "Kappa (std)": np.std(kappas),
+                "CV Accuracy (mean)": np.mean(accs),
+                "CV Accuracy (std)": np.std(accs),
+                "CV Kappa (mean)": np.mean(kappas),
+                "CV Kappa (std)": np.std(kappas),
+                "Test Accuracy": test_results[model_name]["accuracy"],
+                "Test Kappa": test_results[model_name]["kappa"],
             }
         )
 
 summary_df = pd.DataFrame(summary)
-print("\n模型性能比较:")
+print("\n交叉验证 + 测试集性能比较:")
 print(summary_df.to_string(index=False))
 
 # ============================================================
-# 7. 可视化结果
+# 8. 可视化结果
 # ============================================================
-print("\n7. 可视化结果")
+print("\n8. 可视化结果")
 print("-" * 40)
+
+plt.rcParams['font.sans-serif'] = ['Helvetica']
 
 # 创建可视化
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-# 1. 准确率对比
+# 1. 交叉验证准确率对比
 ax = axes[0, 0]
 models = [s["Model"] for s in summary]
-acc_means = [s["Accuracy (mean)"] for s in summary]
-acc_stds = [s["Accuracy (std)"] for s in summary]
+cv_acc_means = [s["CV Accuracy (mean)"] for s in summary]
+cv_acc_stds = [s["CV Accuracy (std)"] for s in summary]
 
-bars = ax.bar(models, acc_means, yerr=acc_stds, capsize=5, alpha=0.7)
+bars = ax.bar(models, cv_acc_means, yerr=cv_acc_stds, capsize=5, alpha=0.7)
 ax.set_ylabel("Accuracy")
-ax.set_title("Model Accuracy Comparison")
+ax.set_title("CV Accuracy (Train Only)")
 ax.set_ylim([0, 1])
 ax.grid(True, alpha=0.3)
 
-# 在柱子上显示数值
-for bar, mean, std in zip(bars, acc_means, acc_stds):
+for bar, mean, std in zip(bars, cv_acc_means, cv_acc_stds):
     height = bar.get_height()
     ax.text(
         bar.get_x() + bar.get_width() / 2.0,
@@ -456,18 +602,18 @@ for bar, mean, std in zip(bars, acc_means, acc_stds):
         va="bottom",
     )
 
-# 2. Kappa 对比
+# 2. 交叉验证 Kappa 对比
 ax = axes[0, 1]
-kappa_means = [s["Kappa (mean)"] for s in summary]
-kappa_stds = [s["Kappa (std)"] for s in summary]
+cv_kappa_means = [s["CV Kappa (mean)"] for s in summary]
+cv_kappa_stds = [s["CV Kappa (std)"] for s in summary]
 
-bars = ax.bar(models, kappa_means, yerr=kappa_stds, capsize=5, alpha=0.7, color="orange")
+bars = ax.bar(models, cv_kappa_means, yerr=cv_kappa_stds, capsize=5, alpha=0.7, color="orange")
 ax.set_ylabel("Cohen's Kappa")
-ax.set_title("Model Kappa Comparison")
+ax.set_title("CV Kappa (Train Only)")
 ax.set_ylim([0, 1])
 ax.grid(True, alpha=0.3)
 
-for bar, mean, std in zip(bars, kappa_means, kappa_stds):
+for bar, mean, std in zip(bars, cv_kappa_means, cv_kappa_stds):
     height = bar.get_height()
     ax.text(
         bar.get_x() + bar.get_width() / 2.0,
@@ -477,8 +623,32 @@ for bar, mean, std in zip(bars, kappa_means, kappa_stds):
         va="bottom",
     )
 
-# 3. 各折准确率
+# 3. 测试集准确率对比
 ax = axes[1, 0]
+test_accs = [s["Test Accuracy"] for s in summary]
+test_kappas = [s["Test Kappa"] for s in summary]
+
+x = np.arange(len(models))
+width = 0.35
+bars1 = ax.bar(x - width/2, test_accs, width, label="Accuracy", alpha=0.8)
+bars2 = ax.bar(x + width/2, test_kappas, width, label="Kappa", alpha=0.8, color="green")
+ax.set_ylabel("Score")
+ax.set_title("Test Set Performance")
+ax.set_xticks(x)
+ax.set_xticklabels(models)
+ax.set_ylim([0, 1])
+ax.legend()
+ax.grid(True, alpha=0.3)
+
+for bar in bars1:
+    height = bar.get_height()
+    ax.text(bar.get_x() + bar.get_width() / 2.0, height, f"{height:.3f}", ha="center", va="bottom", fontsize=8)
+for bar in bars2:
+    height = bar.get_height()
+    ax.text(bar.get_x() + bar.get_width() / 2.0, height, f"{height:.3f}", ha="center", va="bottom", fontsize=8)
+
+# 4. 各折准确率
+ax = axes[1, 1]
 for model_name, fold_results in results.items():
     if len(fold_results) > 0:
         accs = [r["accuracy"] for r in fold_results]
@@ -486,31 +656,10 @@ for model_name, fold_results in results.items():
 
 ax.set_xlabel("Fold")
 ax.set_ylabel("Accuracy")
-ax.set_title("Accuracy per Fold")
+ax.set_title("CV Accuracy per Fold (Train Only)")
 ax.legend()
 ax.grid(True, alpha=0.3)
 ax.set_xticks(range(1, CONFIG["n_folds"] + 1))
-
-# 4. 箱线图
-ax = axes[1, 1]
-data_to_plot = []
-labels = []
-for model_name, fold_results in results.items():
-    if len(fold_results) > 0:
-        accs = [r["accuracy"] for r in fold_results]
-        data_to_plot.append(accs)
-        labels.append(model_name)
-
-if len(data_to_plot) > 0:
-    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True)
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Accuracy Distribution")
-    ax.grid(True, alpha=0.3)
-
-    # 设置颜色
-    colors = ["lightblue", "lightgreen", "lightcoral"]
-    for patch, color in zip(bp["boxes"], colors[:len(labels)]):
-        patch.set_facecolor(color)
 
 plt.tight_layout()
 plt.savefig("project_results.png", dpi=150)
@@ -518,9 +667,9 @@ print("结果图已保存到: project_results.png")
 plt.close()
 
 # ============================================================
-# 8. 保存结果
+# 9. 保存结果
 # ============================================================
-print("\n8. 保存结果")
+print("\n9. 保存结果")
 print("-" * 40)
 
 # 保存为 CSV
@@ -536,7 +685,8 @@ print("  - project_results.png: 结果可视化")
 print("  - project_results.csv: 详细结果数据")
 print("\n学习要点：")
 print("1. 使用 MOABB 加载公开 BCI 数据集")
-print("2. 交叉验证评估模型泛化能力")
-print("3. 多模型比较选择最佳方案")
-print("4. 完整的端到端管道：数据 -> 预处理 -> 训练 -> 评估")
+print("2. 划分 train/test：仅用 train 做交叉验证，test 做最终评估")
+print("3. 交叉验证评估模型泛化能力")
+print("4. 多模型比较选择最佳方案")
+print("5. 完整的端到端管道：数据 -> 预处理 -> 训练 -> 评估")
 print("=" * 60)
