@@ -157,18 +157,20 @@ description = pd.Series(
         "run": 0            # 轮次编号(包含多个试次trial)
     }
 )
-dataset1 = RawDataset(raw_reref, description)
+# 创建 RawDataset
+dataset1 = RawDataset(raw_reref, pd.Series({'subject': 0, 'session': 'train', 'run': 0}))
+dataset2 = RawDataset(raw_reref, pd.Series({"subject": 1, "session": "train", "run": 0}))
+# 拼接多个数据集，成为 BaseConcatDataset
+concat_dataset = BaseConcatDataset([dataset1, dataset2])
+
 print(f"RawDataset: {dataset1}")
 print(f"  - 数据长度: {len(dataset1)}")
-
-# 拼接多个数据集
-dataset2 = RawDataset(raw_reref, pd.Series({"subject": 1, "session": "train", "run": 0}))
-concat_dataset = BaseConcatDataset([dataset1, dataset2])
 print(f"BaseConcatDataset: {concat_dataset}")
 print(f"  - 包含 {len(concat_dataset.datasets)} 个子数据集")
 
 print(concat_dataset.datasets[0].description)
 print(concat_dataset.datasets[1].description)
+
 
 """
 Subject（被试 / 人）
